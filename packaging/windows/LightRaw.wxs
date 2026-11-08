@@ -19,7 +19,7 @@
 
         <Icon Id="AppIcon" SourceFile="..\..\assets\icon.ico" />
         <Property Id="ARPPRODUCTICON" Value="AppIcon" />
-        <Property Id="ARPHELPLINK" Value="https://github.com/moestret/LightRaw" />
+        <Property Id="ARPHELPLINK" Value="https://github.com/moesstudio/LightRaw" />
 
         <Directory Id="TARGETDIR" Name="SourceDir">
             <Directory Id="ProgramFiles64Folder">

@@ -31,7 +31,7 @@
 
 ## 📦 Installers & Downloads
 
-Pre-built binaries and installers are provided for every major platform in [GitHub Releases](https://github.com/moestret/LightRaw/releases):
+Pre-built binaries and installers are provided for every major platform in [GitHub Releases](https://github.com/moesstudio/LightRaw/releases):
 
 | Platform | Installer Type | File Name | Notes |
 | :--- | :--- | :--- | :--- |
@@ -57,7 +57,7 @@ Pre-built binaries and installers are provided for every major platform in [GitH
 ### Build & Run
 ```bash
 # Clone the repository
-git clone https://github.com/moestret/LightRaw.git
+git clone https://github.com/moesstudio/LightRaw.git
 cd LightRaw
 
 # Build optimized release binary

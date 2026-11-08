@@ -5,7 +5,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: Moestret <moestret.nawawie@gmail.com>
 Depends: libc6 (>= 2.31), libssl3 | libssl1.1, libfontconfig1, libx11-6, libxcursor1, libxrandr2, libxi6, libgl1
-Homepage: https://github.com/moestret/LightRaw
+Homepage: https://github.com/moesstudio/LightRaw
 Description: Professional 32-bit Linear RAW Photo Editor & Catalog
  LightRaw is a native, ultra-fast, non-destructive RAW photo editor and
  image asset manager. Featuring a full 11-stage Camera RAW develop pipeline,

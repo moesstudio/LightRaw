@@ -4,7 +4,7 @@
 #define MyAppName "LightRaw"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Moestret"
-#define MyAppURL "https://github.com/moestret/LightRaw"
+#define MyAppURL "https://github.com/moesstudio/LightRaw"
 #define MyAppExeName "lightraw.exe"
 
 [Setup]
