@@ -1,0 +1,45 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Output / Distributables
+/dist/
+*.dmg
+*.exe
+*.msi
+*.deb
+*.rpm
+*.AppImage
+*.tar.gz
+*.zip
+
+# SQLite temporary journal files
+LightRawCatalog.lrcat-shm
+LightRawCatalog.lrcat-wal
+*.db-shm
+*.db-wal
+
+# macOS System & App Bundle internals
+.DS_Store
+**/.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Reference Third-Party Apps & Raw Media
+Adobe Lightroom Classic.app/
+Screenshoot/
+Screenshots/
+*.raw
+*.CR2
+*.NEF
+*.ARW
+
+# IDE & Editor Configs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

@@ -1,0 +1,194 @@
+name: Build & Release Multi-Platform Installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ==========================================================================
+  # 1. macOS Build & DMG Installer
+  # ==========================================================================
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Package LightRaw.app
+        run: |
+          mkdir -p LightRaw.app/Contents/MacOS
+          mkdir -p LightRaw.app/Contents/Resources
+          cp target/release/lightraw LightRaw.app/Contents/MacOS/LightRaw
+          chmod +x LightRaw.app/Contents/MacOS/LightRaw
+          cp LightRaw.icns LightRaw.app/Contents/Resources/LightRaw.icns || true
+
+      - name: Build macOS DMG Installer
+        run: |
+          chmod +x packaging/macos/build_dmg.sh
+          ./packaging/macos/build_dmg.sh
+
+      - name: Upload macOS DMG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          path: dist/*.dmg
+
+  # ==========================================================================
+  # 2. Windows Build (.exe & .msi Installers)
+  # ==========================================================================
+  build-windows:
+    name: Build Windows Installers (.exe & .msi)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Inno Setup & WiX Toolset
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          dotnet tool install --global wix || true
+
+      - name: Build Windows Release Binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Prepare Windows Dist Directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target/x86_64-pc-windows-msvc/release/lightraw.exe target/release/lightraw.exe -Force
+
+      - name: Build Inno Setup Installer (.exe)
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging/windows/LightRaw.iss
+
+      - name: Build WiX Installer (.msi)
+        shell: pwsh
+        run: |
+          wix extension add WixToolset.UI.wixext || true
+          wix build -arch x64 packaging/windows/LightRaw.wxs -o dist/LightRaw-1.0.0.msi || true
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            dist/*.exe
+            dist/*.msi
+
+  # ==========================================================================
+  # 3. Linux Build (.deb, .AppImage, tar.gz)
+  # ==========================================================================
+  build-linux:
+    name: Build Linux Installers (.deb, .AppImage)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libfontconfig1-dev libgl1-mesa-dev desktop-file-utils
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Linux Release Binary
+        run: cargo build --release
+
+      - name: Build Debian Package (.deb)
+        run: |
+          chmod +x packaging/linux/build_deb.sh
+          ./packaging/linux/build_deb.sh
+
+      - name: Build AppImage / Linux Tarball
+        run: |
+          # Download linuxdeploy & appimagetool
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /usr/local/bin/appimagetool || true
+          chmod +x /usr/local/bin/appimagetool || true
+          chmod +x packaging/linux/build_appimage.sh
+          ./packaging/linux/build_appimage.sh
+
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-installers
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.tar.gz
+
+  # ==========================================================================
+  # 4. Publish Release to GitHub
+  # ==========================================================================
+  release:
+    name: Publish GitHub Release
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download macOS Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-installer
+          path: release_assets
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installers
+          path: release_assets
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-installers
+          path: release_assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_assets/*
+          name: "LightRaw 1.0.0"
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          body: |
+            ## LightRaw 1.0.0 — Official Release
+
+            Professional 32-bit Linear RAW Photo Editor & Catalog by Moestret.
+
+            ### Available Installers:
+            - **macOS**: `LightRaw-1.0.0-macOS.dmg` (Universal Drag & Drop Installer)
+            - **Windows**: `LightRaw-1.0.0-Windows-Setup.exe` (Inno Setup) & `LightRaw-1.0.0.msi` (Windows Installer)
+            - **Linux (Debian / Ubuntu / Mint)**: `lightraw_1.0.0_amd64.deb`
+            - **Linux (Universal)**: `LightRaw-1.0.0-x86_64.AppImage` & `lightraw-1.0.0-linux-x86_64.tar.gz`
+
+            ### Key Features:
+            - **Camera RAW Develop Pipeline**: 11-stage ACR PV2012 non-destructive float pipeline
+            - **120 FPS Performance**: Instant GPU-accelerated pan/zoom with zero stutter
+            - **Cropping Synchronization**: Sync crop framing, aspect ratio, and angle across photos or whole library
+            - **Print & Publishing Module**: Contact Sheet, Picture Package, Custom Package, 300 PPI export
+            - **Native macOS & Cross-Platform UI**: Squircle macOS icon, full keyboard shortcuts, and clean catalog

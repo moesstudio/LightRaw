@@ -1,0 +1,49 @@
+{
+  "mode": "layout",
+  "original": {
+    "width": 1024,
+    "height": 664
+  },
+  "clone": {
+    "width": 2940,
+    "height": 1706
+  },
+  "compared_at": {
+    "width": 480,
+    "height": 279
+  },
+  "height_delta_pct": -10.3,
+  "score": 52.0,
+  "verdict": "partly",
+  "regions": [
+    {
+      "x": 85,
+      "y": 0,
+      "w": 426,
+      "h": 512,
+      "cells": 15,
+      "where": "middle left"
+    },
+    {
+      "x": 512,
+      "y": 0,
+      "w": 512,
+      "h": 426,
+      "cells": 13,
+      "where": "top right"
+    },
+    {
+      "x": 341,
+      "y": 426,
+      "w": 682,
+      "h": 170,
+      "cells": 9,
+      "where": "bottom right"
+    }
+  ],
+  "files": {
+    "original": "replica/screens/S02_develop_main.png",
+    "clone": "/Users/mustamar/.gemini/antigravity/brain/0686adf6-62dc-43eb-8cf0-1cf9fe7449ca/lightraw_live_photo5.png"
+  },
+  "diff_image": "replica/diffs/S02_develop.png"
+}

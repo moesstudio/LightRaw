@@ -1,0 +1,43 @@
+feature,area,priority,original,clone,notes
+SQLite Catalog loading and autosave,catalog,must,yes,yes,LightRawCatalog.lrcat
+Folder and drive photo discovery,library,must,yes,yes,AgLibraryFolder / real file path support
+Filmstrip with selectable thumbnail size and active badge,library,must,yes,yes,1/2 size toggles with photo selection
+Star Rating 1-5 and Color Labels with hotkeys,library,must,yes,yes,1-5 stars and 6-9 labels with persistent db save
+Grid and Loupe view switching (G / E / D keys),library,must,yes,yes,Seamless keyboard navigation between Library and Develop
+Assisted Culling portrait group clustering,library,should,yes,yes,AI/face clustering and duplicate detection
+Non-destructive RAW decoding with Apple ColorSync sRGB,develop,must,yes,yes,Native sips CIRAW demosaicing
+Adobe Camera Profiles (Adobe Color Vivid Portrait Landscape Neutral),develop,must,yes,yes,LUT and profile matrices
+Planckian Mired White Balance (Temp Kelvin & Tint),develop,must,yes,yes,Calibrated to daylight standard reference
+Basic Tone Controls (Exposure Contrast Highlights Shadows Whites Blacks),develop,must,yes,yes,Photometric chromaticity-preserved tone curve
+Presence Sliders (Texture Clarity Dehaze Vibrance Saturation),develop,must,yes,yes,High-frequency texture and skin-protected vibrance
+Parametric Tone Curve with 4 regions and Point Curve,develop,must,yes,yes,Highlights Lights Darks Shadows with split points
+Color Mixer 8-Band HSL (Hue Saturation Luminance),develop,must,yes,yes,Dedicated red orange yellow green aqua blue purple magenta bands
+Point Color eyedropper and range controls,develop,should,yes,yes,Interactive hue/sat/lum swatch extraction
+3-Way Color Grading (Shadows Midtones Highlights Global),develop,must,yes,yes,Color wheels with blending and balance sliders
+Detail Sharpening and Noise Reduction,develop,must,yes,yes,Unsharp mask with radius detail and luminance smoothing
+Lens Corrections (Chromatic Aberration Profile Distortion),develop,should,yes,yes,Transverse CA removal and radial distortion correction
+Transform and Upright geometry correction,develop,should,yes,yes,Auto Level Vertical and manual perspective sliders
+Effects (Post-Crop Vignetting and Film Grain),develop,should,yes,yes,Cosine vignette and pseudo-random grain synthesis
+Camera Calibration (Shadow Tint and RGB Primaries),develop,should,yes,yes,Process Version 6 camera primary shifts
+Crop and Straighten tool with aspect ratios (1x1 4x3 16x9),develop,must,yes,yes,Interactive crop box with angle straightening
+Spot Removal and Retouch (Heal Clone modes),develop,should,yes,yes,Radius and feather circular patch transfer
+Red Eye and Pet Eye correction,develop,could,yes,yes,Pupil darkening and pupil size adjustment
+Masking engine (Subject Sky Background Linear Radial Brush),develop,must,yes,yes,Local adjustments with color/exposure deltas
+Presets drawer with collapsible categories and search filter,presets,must,yes,yes,Hierarchical list with live text filter
+Presets Plus (+) context menu (Create Import Manage),presets,must,yes,yes,Popup menu matching Lightroom Classic
+Preset item right-click context menu (Favorites Export Rename Delete etc),presets,must,yes,yes,8 contextual actions including Export to .xmp
+Import Presets from .xmp files,presets,must,yes,yes,Parses Adobe Camera Raw CRS XML schemas
+Export Presets to .xmp files,presets,must,yes,yes,Generates Adobe-compliant XML XMP preset files
+Copy Settings modal dialog with granular category checkboxes,presets,must,yes,yes,Treatment Basic Curve Mixer Grading Detail Lens Transform Effects Calibration
+Check All Check None and Subset dropdown in Copy Settings,presets,must,yes,yes,One-click bulk selection controls
+Selective Paste Settings matching clipboard mask,presets,must,yes,yes,Applies only chosen parameters to selected photo(s)
+Undo and Redo with visual History step list,history,must,yes,yes,Step list with timestamp and parameter restoration
+Snapshots panel for named develop states,history,should,yes,yes,Save and restore arbitrary develop moments
+Native macOS top menu bar (File Edit Develop Photo Settings Tools View Window Help),menubar,must,yes,yes,Full Cocoa NSMenu integration
+Before and After split view comparison (Y and Shift+Y),develop,should,yes,yes,Left-Right Top-Bottom and Split-screen views
+Interactive TAT (Targeted Adjustment Tool) for Curves and HSL,develop,could,yes,yes,Click-drag on image to modulate band values
+Batch Export with format and quality settings,export,must,yes,yes,JPEG export with custom max dimensions
+Cloud Creative Cloud sync,cloud,skip,yes,skip,Adobe proprietary cloud sync server
+Firefly Cloud Generative AI fill,ai,skip,yes,skip,Adobe proprietary cloud AI service
+Adobe Exchange marketplace,integrations,skip,yes,skip,Adobe proprietary third-party plugin network
+Proprietary camera tethering SDKs,hardware,skip,yes,skip,Requires proprietary hardware vendor SDKs

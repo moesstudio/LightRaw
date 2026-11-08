@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=LightRaw
+GenericName=Professional RAW Photo Editor
+Comment=Non-destructive 32-bit float RAW photo processor and catalog
+Exec=lightraw %F
+Icon=lightraw
+Terminal=false
+Type=Application
+Categories=Graphics;Photography;RasterGraphics;2DGraphics;
+MimeType=image/x-adobe-dng;image/x-canon-cr2;image/x-canon-cr3;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;image/tiff;image/jpeg;image/png;
+StartupNotify=true
+StartupWMClass=lightraw
+Keywords=photo;raw;editor;lightroom;catalog;develop;camera;photography;
