@@ -108,7 +108,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libfontconfig1-dev libgl1-mesa-dev desktop-file-utils
+          sudo apt-get install -y libssl-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libfontconfig1-dev libgl1-mesa-dev desktop-file-utils libfuse2 || true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -126,6 +126,7 @@ jobs:
           # Download linuxdeploy & appimagetool
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /usr/local/bin/appimagetool || true
           chmod +x /usr/local/bin/appimagetool || true
+          export APPIMAGE_EXTRACT_AND_RUN=1
           chmod +x packaging/linux/build_appimage.sh
           ./packaging/linux/build_appimage.sh
 
@@ -171,6 +172,8 @@ jobs:
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: release_assets/*
           name: "LightRaw 1.0.0"

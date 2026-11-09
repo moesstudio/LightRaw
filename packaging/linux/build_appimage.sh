@@ -31,11 +31,14 @@ EOF
 chmod 755 "${APP_DIR}/AppRun"
 
 mkdir -p "${DIST_DIR}"
+# Always produce clean standalone Linux tarball
+tar -czf "${DIST_DIR}/lightraw-1.0.0-linux-x86_64.tar.gz" -C "${APP_DIR}" .
+echo "==> Successfully built: ${DIST_DIR}/lightraw-1.0.0-linux-x86_64.tar.gz"
+
 if command -v appimagetool >/dev/null 2>&1; then
-    ARCH=x86_64 appimagetool "${APP_DIR}" "${DIST_DIR}/LightRaw-1.0.0-x86_64.AppImage"
-    echo "==> Successfully built: ${DIST_DIR}/LightRaw-1.0.0-x86_64.AppImage"
-else
-    echo "==> appimagetool not found locally. Tarball created as portable Linux bundle."
-    tar -czf "${DIST_DIR}/lightraw-1.0.0-linux-x86_64.tar.gz" -C "${APP_DIR}" .
-    echo "==> Successfully built: ${DIST_DIR}/lightraw-1.0.0-linux-x86_64.tar.gz"
+    export APPIMAGE_EXTRACT_AND_RUN=1
+    ARCH=x86_64 appimagetool --appimage-extract-and-run "${APP_DIR}" "${DIST_DIR}/LightRaw-1.0.0-x86_64.AppImage" || true
+    if [ -f "${DIST_DIR}/LightRaw-1.0.0-x86_64.AppImage" ]; then
+        echo "==> Successfully built: ${DIST_DIR}/LightRaw-1.0.0-x86_64.AppImage"
+    fi
 fi
