@@ -37,6 +37,7 @@ Name: "associate_lrcat"; Description: "Associate with LightRaw Catalog (.lrcat)"
 
 [Files]
 Source: "..\..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "redist\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\..\assets\icon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\..\assets\icon.png"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme

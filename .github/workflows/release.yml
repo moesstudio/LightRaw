@@ -68,12 +68,24 @@ jobs:
 
       - name: Build Windows Release Binary
         run: cargo build --release --target x86_64-pc-windows-msvc
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
 
-      - name: Prepare Windows Dist Directory
+      - name: Prepare Windows Dist Directory and Bundled Runtime DLLs
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
+          New-Item -ItemType Directory -Force -Path packaging/windows/redist
           Copy-Item target/x86_64-pc-windows-msvc/release/lightraw.exe target/release/lightraw.exe -Force
+          # Bundle VCRUNTIME and MSVCP DLLs from runner System32 as portable safety net
+          $dlls = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll")
+          foreach ($dll in $dlls) {
+            $sysPath = "C:\Windows\System32\$dll"
+            if (Test-Path $sysPath) {
+              Copy-Item $sysPath "packaging/windows/redist\$dll" -Force
+              Write-Host "Bundled $dll into packaging/windows/redist/"
+            }
+          }
 
       - name: Build Inno Setup Installer (.exe)
         shell: pwsh
