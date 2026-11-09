@@ -602,6 +602,13 @@ fn render_preferences_modal(app: &mut LightRawApp, ctx: &egui::Context) {
                     );
                     ui.end_row();
 
+                    ui.label("In-App Menu Bar:");
+                    ui.checkbox(
+                        &mut app.show_in_app_menubar,
+                        "Show Menu Bar (File, Edit, Develop, Photo, View, Window, Help)",
+                    );
+                    ui.end_row();
+
                     ui.label("Default Import Preset:");
                     let cur_imp = app
                         .apply_on_import_preset_id

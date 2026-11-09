@@ -361,6 +361,7 @@ pub struct LightRawApp {
     pub selected_folder: Option<String>,
 
     // Global Panels & Appearance
+    pub show_in_app_menubar: bool,
     pub show_top_module_picker: bool,
     pub show_left_panel: bool,
     pub show_right_panel: bool,
@@ -829,6 +830,7 @@ impl LightRawApp {
             selected_collection_id: None,
             selected_folder: None,
 
+            show_in_app_menubar: if cfg!(target_os = "macos") { false } else { true },
             show_top_module_picker: true,
             show_left_panel: true,
             show_right_panel: true,
@@ -4118,6 +4120,7 @@ impl eframe::App for LightRawApp {
         if self.show_import_modal {
             other_modules::render_import_workspace(self, ctx);
         } else {
+            self.render_system_menu_bar(ctx);
             self.render_top_module_picker(ctx);
             self.render_bottom_filmstrip(ctx);
 

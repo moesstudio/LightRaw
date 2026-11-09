@@ -5,6 +5,7 @@
 // ============================================================================
 
 #![allow(float_literal_f32_fallback)]
+#![windows_subsystem = "windows"]
 
 pub mod ai;
 pub mod catalog;
@@ -19,43 +20,92 @@ use std::path::PathBuf;
 use ui::{Colors, LightRawApp};
 
 /// Applies Adobe Lightroom Classic's signature neutral dark charcoal color scheme
-/// and loads macOS system Unicode fonts (Arial Unicode / SF) so all symbols (▼, ▶, ⊞, ⚑, ★, ⌑, 🩹, etc.)
-/// render crisply without tofu boxes (`□`).
+/// and loads native system Unicode fonts (SF Pro on macOS, Segoe UI on Windows, DejaVu/Noto on Linux)
+/// so all symbols (▼, ▶, ⊞, ⚑, ★, ⌑, 🩹, etc.) render crisply without tofu boxes (`□`).
 fn configure_lightroom_visuals(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    // 1. Native Apple San Francisco Pro System Font
-    if let Ok(sf_data) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
-        fonts.font_data.insert(
-            "sf_pro".to_owned(),
-            egui::FontData::from_owned(sf_data),
-        );
-        if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-            prop.insert(0, "sf_pro".to_owned());
+
+    // 1. macOS System Fonts (San Francisco Pro & Arial Unicode)
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(sf_data) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+            fonts.font_data.insert(
+                "sf_pro".to_owned(),
+                egui::FontData::from_owned(sf_data),
+            );
+            if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                prop.insert(0, "sf_pro".to_owned());
+            }
+        }
+        if let Ok(sf_mono) = std::fs::read("/System/Library/Fonts/SFNSMono.ttf") {
+            fonts.font_data.insert(
+                "sf_mono".to_owned(),
+                egui::FontData::from_owned(sf_mono),
+            );
+            if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                mono.insert(0, "sf_mono".to_owned());
+            }
+        }
+        if let Ok(font_data) = std::fs::read("/System/Library/Fonts/Supplemental/Arial Unicode.ttf") {
+            fonts.font_data.insert(
+                "arial_unicode".to_owned(),
+                egui::FontData::from_owned(font_data),
+            );
+            if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                prop.push("arial_unicode".to_owned());
+            }
+            if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                mono.push("arial_unicode".to_owned());
+            }
         }
     }
-    // 2. Native Apple San Francisco Mono Font
-    if let Ok(sf_mono) = std::fs::read("/System/Library/Fonts/SFNSMono.ttf") {
-        fonts.font_data.insert(
-            "sf_mono".to_owned(),
-            egui::FontData::from_owned(sf_mono),
-        );
-        if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-            mono.insert(0, "sf_mono".to_owned());
+
+    // 2. Windows Native Fonts (Segoe UI & Segoe UI Emoji)
+    #[cfg(target_os = "windows")]
+    {
+        let win_dir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let segoe = format!("{}\\Fonts\\segoeui.ttf", win_dir);
+        if let Ok(data) = std::fs::read(&segoe) {
+            fonts.font_data.insert("segoe_ui".to_owned(), egui::FontData::from_owned(data));
+            if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                prop.insert(0, "segoe_ui".to_owned());
+            }
+        }
+        let consola = format!("{}\\Fonts\\consola.ttf", win_dir);
+        if let Ok(data) = std::fs::read(&consola) {
+            fonts.font_data.insert("consolas".to_owned(), egui::FontData::from_owned(data));
+            if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                mono.insert(0, "consolas".to_owned());
+            }
+        }
+        let seg_emoji = format!("{}\\Fonts\\seguiemj.ttf", win_dir);
+        if let Ok(data) = std::fs::read(&seg_emoji) {
+            fonts.font_data.insert("segoe_emoji".to_owned(), egui::FontData::from_owned(data));
+            if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                prop.push("segoe_emoji".to_owned());
+            }
         }
     }
-    // 3. Fallback for Unicode glyphs & symbols
-    if let Ok(font_data) = std::fs::read("/System/Library/Fonts/Supplemental/Arial Unicode.ttf") {
-        fonts.font_data.insert(
-            "arial_unicode".to_owned(),
-            egui::FontData::from_owned(font_data),
-        );
-        if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-            prop.push("arial_unicode".to_owned());
-        }
-        if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-            mono.push("arial_unicode".to_owned());
+
+    // 3. Linux Fonts (DejaVu / Noto / Liberation)
+    #[cfg(target_os = "linux")]
+    {
+        let candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        ];
+        for c in candidates {
+            if let Ok(data) = std::fs::read(c) {
+                fonts.font_data.insert("linux_sans".to_owned(), egui::FontData::from_owned(data));
+                if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                    prop.insert(0, "linux_sans".to_owned());
+                }
+                break;
+            }
         }
     }
+
     ctx.set_fonts(fonts);
 
     let mut visuals = egui::Visuals::dark();
@@ -1129,5 +1179,25 @@ mod tests {
         assert_eq!(app.photos[2].params.crop_aspect_preset, AspectRatioPreset::Ratio16x9);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_in_app_system_menu_bar_dispatch() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "lightraw_menu_bar_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mut app = crate::ui::LightRawApp::new(temp_dir.clone());
+        app.show_in_app_menubar = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            app.render_system_menu_bar(ctx);
+        });
+        assert!(app.show_in_app_menubar);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

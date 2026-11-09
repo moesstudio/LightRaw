@@ -3,12 +3,13 @@
 // ============================================================================
 
 use super::{
-    BeforeAfterMode, DevelopTool, LibraryFilterMode, LibraryViewMode, LightRawApp, WorkspaceModule,
+    BeforeAfterMode, Colors, DevelopTool, LibraryFilterMode, LibraryViewMode, LightRawApp,
+    WorkspaceModule,
 };
 use crate::catalog::{ColorLabel, PickFlag};
 use crate::params::DevelopParams;
 use crate::presets::CopySettingsMask;
-use eframe::egui;
+use eframe::egui::{self, Color32, Stroke, Vec2};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -894,5 +895,504 @@ impl LightRawApp {
                     format!("Created & opened TIFF derivative: {}", tif_path.display());
             }
         }
+    }
+
+    pub fn render_system_menu_bar(&mut self, ctx: &egui::Context) {
+        if !self.show_in_app_menubar || self.slideshow_fullscreen {
+            return;
+        }
+
+        let mod_k = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+        let alt_k = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
+        let shift_k = if cfg!(target_os = "macos") { "⇧" } else { "Shift+" };
+
+        egui::TopBottomPanel::top("lr_in_app_system_menu_bar")
+            .exact_height(24.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(26, 26, 30))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(38, 38, 44)))
+                    .inner_margin(egui::Margin::symmetric(8.0, 2.0)),
+            )
+            .show(ctx, |ui| {
+                ui.style_mut().visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.hovered.bg_fill = Color32::from_rgb(45, 45, 52);
+                ui.style_mut().visuals.widgets.active.bg_fill = Color32::from_rgb(55, 55, 65);
+                ui.style_mut().visuals.widgets.inactive.fg_stroke.color = Colors::TEXT_MAIN;
+                ui.style_mut().visuals.widgets.hovered.fg_stroke.color = Colors::TEXT_BRIGHT;
+                ui.style_mut().visuals.widgets.active.fg_stroke.color = Color32::WHITE;
+
+                egui::menu::bar(ui, |ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+
+                    // 1. FILE
+                    ui.menu_button("File", |ui| {
+                        ui.set_min_width(240.0);
+                        if ui.add(egui::Button::new("New Catalog...").shortcut_text(format!("{}N", mod_k))).clicked() {
+                            self.execute_menu_action(10);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Open Catalog...").shortcut_text(format!("{}O", mod_k))).clicked() {
+                            self.execute_menu_action(11);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Open Recent Catalog")).clicked() {
+                            self.execute_menu_action(170);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Optimize Catalog...")).clicked() {
+                            self.execute_menu_action(12);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Rename Catalog...")).clicked() {
+                            self.execute_menu_action(13);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Import Photos and Videos...").shortcut_text(format!("{}{}I", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(14);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Import from Another Catalog...")).clicked() {
+                            self.execute_menu_action(171);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Import Presets (.xmp)...")).clicked() {
+                            self.execute_menu_action(172);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Export...").shortcut_text(format!("{}{}E", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(15);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Export with Previous").shortcut_text(format!("{}{}{}E", mod_k, alt_k, shift_k))).clicked() {
+                            self.execute_menu_action(16);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Export as Catalog...")).clicked() {
+                            self.execute_menu_action(174);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Email Photos...")).clicked() {
+                            self.execute_menu_action(175);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Page Setup...").shortcut_text(format!("{}{}P", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(19);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Print...").shortcut_text(format!("{}P", mod_k))).clicked() {
+                            self.execute_menu_action(20);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Exit").shortcut_text(if cfg!(target_os = "windows") { "Alt+F4" } else { "Ctrl+Q" })).clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                            ui.close_menu();
+                        }
+                    });
+
+                    // 2. EDIT
+                    ui.menu_button("Edit", |ui| {
+                        ui.set_min_width(240.0);
+                        if ui.add(egui::Button::new("Undo").shortcut_text(format!("{}Z", mod_k))).clicked() {
+                            self.execute_menu_action(30);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Redo").shortcut_text(if cfg!(target_os = "macos") { "⌘⇧Z" } else { "Ctrl+Y" })).clicked() {
+                            self.execute_menu_action(31);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Cut Develop Settings").shortcut_text(format!("{}X", mod_k))).clicked() {
+                            self.execute_menu_action(32);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Copy Develop Settings...").shortcut_text(format!("{}{}C", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(33);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Paste Develop Settings").shortcut_text(format!("{}{}V", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(34);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Delete Selected Photo(s)").shortcut_text("Del")).clicked() {
+                            self.execute_menu_action(35);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Select All").shortcut_text(format!("{}A", mod_k))).clicked() {
+                            self.execute_menu_action(36);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Select None").shortcut_text(format!("{}D", mod_k))).clicked() {
+                            self.execute_menu_action(37);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Invert Selection").shortcut_text(format!("{}{}I", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(38);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Select Flagged Photos")).clicked() {
+                            self.execute_menu_action(39);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Deselect Unflagged Photos")).clicked() {
+                            self.execute_menu_action(40);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Edit Watermarks...")).clicked() {
+                            self.execute_menu_action(43);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Preferences...").shortcut_text(format!("{},", mod_k))).clicked() {
+                            self.execute_menu_action(3);
+                            ui.close_menu();
+                        }
+                    });
+
+                    // 3. DEVELOP
+                    ui.menu_button("Develop", |ui| {
+                        ui.set_min_width(250.0);
+                        if ui.add(egui::Button::new("New Snapshot...").shortcut_text(format!("{}N", mod_k))).clicked() {
+                            self.execute_menu_action(50);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("New Preset...").shortcut_text(format!("{}{}N", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(51);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Clear History")).clicked() {
+                            self.execute_menu_action(52);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Crop & Straighten").shortcut_text("R")).clicked() {
+                            self.execute_menu_action(110);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Spot Removal & Generative AI").shortcut_text("Q")).clicked() {
+                            self.execute_menu_action(112);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Red Eye Correction")).clicked() {
+                            self.execute_menu_action(111);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Masking & AI Segmentation").shortcut_text("K")).clicked() {
+                            self.execute_menu_action(113);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("White Balance Selector").shortcut_text("W")).clicked() {
+                            self.execute_menu_action(114);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Targeted Adjustment Tool")).clicked() {
+                            self.execute_menu_action(115);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Guided Upright Perspective")).clicked() {
+                            self.execute_menu_action(116);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Auto Tone").shortcut_text(format!("{}U", mod_k))).clicked() {
+                            self.execute_menu_action(94);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Auto White Balance").shortcut_text(format!("{}{}U", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(95);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Convert to Black & White").shortcut_text("V")).clicked() {
+                            self.execute_menu_action(96);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Toggle HDR Edit Mode")).clicked() {
+                            self.execute_menu_action(97);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Reset Crop")).clicked() {
+                            self.execute_menu_action(98);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Swap Before & After").shortcut_text(format!("{}Y", alt_k))).clicked() {
+                            self.execute_menu_action(100);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Copy Settings...").shortcut_text(format!("{}{}C", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(91);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Paste Settings").shortcut_text(format!("{}{}V", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(92);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Sync Settings...").shortcut_text(format!("{}{}S", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(93);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Reset All Settings").shortcut_text(format!("{}{}R", mod_k, shift_k))).clicked() {
+                            self.execute_menu_action(90);
+                            ui.close_menu();
+                        }
+                    });
+
+                    // 4. PHOTO
+                    ui.menu_button("Photo", |ui| {
+                        ui.set_min_width(250.0);
+                        if ui.add(egui::Button::new("Add to Quick Collection").shortcut_text("B")).clicked() {
+                            self.execute_menu_action(60);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Set Quick Collection as Target")).clicked() {
+                            self.execute_menu_action(177);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Show in File Explorer / Finder").shortcut_text(format!("{}R", mod_k))).clicked() {
+                            self.execute_menu_action(61);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Go to Folder in Library")).clicked() {
+                            self.execute_menu_action(178);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Create Virtual Copy").shortcut_text(format!("{}'", mod_k))).clicked() {
+                            self.execute_menu_action(62);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Edit in External Application")).clicked() {
+                            self.execute_menu_action(179);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Rotate Left (CCW)").shortcut_text(format!("{}[", mod_k))).clicked() {
+                            self.execute_menu_action(63);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Rotate Right (CW)").shortcut_text(format!("{}]", mod_k))).clicked() {
+                            self.execute_menu_action(64);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Flip Horizontal")).clicked() {
+                            self.execute_menu_action(65);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Flip Vertical")).clicked() {
+                            self.execute_menu_action(66);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Set Flag: Pick").shortcut_text("P")).clicked() {
+                            self.execute_menu_action(67);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Set Flag: Unflag").shortcut_text("U")).clicked() {
+                            self.execute_menu_action(68);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Set Flag: Reject").shortcut_text("X")).clicked() {
+                            self.execute_menu_action(69);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        ui.menu_button("Set Rating", |ui| {
+                            for r in 0..=5 {
+                                let label = if r == 0 { "None (0)".to_string() } else { format!("{} Star{}", r, if r > 1 { "s" } else { "" }) };
+                                if ui.add(egui::Button::new(label).shortcut_text(format!("{}", r))).clicked() {
+                                    self.execute_menu_action(70 + r as u32);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        ui.menu_button("Set Color Label", |ui| {
+                            let labels = [("None", 76), ("Red", 77), ("Yellow", 78), ("Green", 79), ("Blue", 80), ("Purple", 81)];
+                            for (name, id) in labels {
+                                if ui.button(name).clicked() {
+                                    self.execute_menu_action(id);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        ui.separator();
+                        if ui.add(egui::Button::new("AI Enhance & Denoise")).clicked() {
+                            self.execute_menu_action(85);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Photo Merge: HDR").shortcut_text(format!("{}H", mod_k))).clicked() {
+                            self.execute_menu_action(180);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Photo Merge: Panorama").shortcut_text(format!("{}M", mod_k))).clicked() {
+                            self.execute_menu_action(181);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Save Metadata to File").shortcut_text(format!("{}S", mod_k))).clicked() {
+                            self.execute_menu_action(83);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Read Metadata from File")).clicked() {
+                            self.execute_menu_action(182);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Update Preview Caches")).clicked() {
+                            self.execute_menu_action(183);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Remove from Catalog").shortcut_text("Del")).clicked() {
+                            self.execute_menu_action(82);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Delete Rejected Photos...").shortcut_text(format!("{}Backspace", mod_k))).clicked() {
+                            self.execute_menu_action(84);
+                            ui.close_menu();
+                        }
+                    });
+
+                    // 5. VIEW
+                    ui.menu_button("View", |ui| {
+                        ui.set_min_width(240.0);
+                        if ui.add(egui::Button::new("Grid").shortcut_text("G")).clicked() {
+                            self.execute_menu_action(129);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Loupe").shortcut_text("E")).clicked() {
+                            self.execute_menu_action(130);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Compare").shortcut_text("C")).clicked() {
+                            self.execute_menu_action(131);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Survey").shortcut_text("N")).clicked() {
+                            self.execute_menu_action(132);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("People (Face Detection)").shortcut_text("O")).clicked() {
+                            self.execute_menu_action(133);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Toggle Zoom").shortcut_text("Z")).clicked() {
+                            self.execute_menu_action(122);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Zoom In").shortcut_text(format!("{}+", mod_k))).clicked() {
+                            self.execute_menu_action(123);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Zoom Out").shortcut_text(format!("{}-", mod_k))).clicked() {
+                            self.execute_menu_action(124);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Zoom 1:1 (100%)")).clicked() {
+                            self.execute_menu_action(125);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Before / After View").shortcut_text("Y")).clicked() {
+                            self.execute_menu_action(126);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Soft Proofing").shortcut_text("S")).clicked() {
+                            self.execute_menu_action(127);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Show Clipping Warnings").shortcut_text("J")).clicked() {
+                            self.execute_menu_action(128);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Toggle Toolbar").shortcut_text("T")).clicked() {
+                            self.execute_menu_action(120);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Cycle Info Overlay").shortcut_text("I")).clicked() {
+                            self.execute_menu_action(121);
+                            ui.close_menu();
+                        }
+                    });
+
+                    // 6. WINDOW
+                    ui.menu_button("Window", |ui| {
+                        ui.set_min_width(240.0);
+                        if ui.add(egui::Button::new("Library Module").shortcut_text(format!("{}{}1", mod_k, alt_k))).clicked() {
+                            self.execute_menu_action(150);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Develop Module").shortcut_text(format!("{}{}2", mod_k, alt_k))).clicked() {
+                            self.execute_menu_action(151);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Map Module").shortcut_text(format!("{}{}3", mod_k, alt_k))).clicked() {
+                            self.execute_menu_action(152);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Book Module").shortcut_text(format!("{}{}4", mod_k, alt_k))).clicked() {
+                            self.execute_menu_action(153);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Slideshow Module").shortcut_text(format!("{}{}5", mod_k, alt_k))).clicked() {
+                            self.execute_menu_action(154);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Print Module").shortcut_text(format!("{}{}6", mod_k, alt_k))).clicked() {
+                            self.execute_menu_action(155);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Web Module").shortcut_text(format!("{}{}7", mod_k, alt_k))).clicked() {
+                            self.execute_menu_action(156);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("Toggle Left Panel").shortcut_text("Tab")).clicked() {
+                            self.execute_menu_action(142);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Toggle Right Panel").shortcut_text("Shift+Tab")).clicked() {
+                            self.execute_menu_action(143);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Toggle Filmstrip").shortcut_text("F6")).clicked() {
+                            self.execute_menu_action(144);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Lights Out Mode").shortcut_text("L")).clicked() {
+                            self.execute_menu_action(141);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Impromptu Slideshow").shortcut_text(format!("{}Enter", mod_k))).clicked() {
+                            self.execute_menu_action(140);
+                            ui.close_menu();
+                        }
+                    });
+
+                    // 7. HELP
+                    ui.menu_button("Help", |ui| {
+                        ui.set_min_width(220.0);
+                        if ui.add(egui::Button::new("LightRaw Documentation").shortcut_text("F1")).clicked() {
+                            self.execute_menu_action(161);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Keyboard Shortcuts Guide").shortcut_text(format!("{}/", mod_k))).clicked() {
+                            self.execute_menu_action(162);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("System Info & Hardware Diagnostic")).clicked() {
+                            self.execute_menu_action(2);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add(egui::Button::new("About LightRaw Classic...").shortcut_text(if cfg!(target_os = "macos") { "⌘I" } else { "" })).clicked() {
+                            self.execute_menu_action(1);
+                            ui.close_menu();
+                        }
+                    });
+                });
+            });
     }
 }
