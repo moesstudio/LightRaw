@@ -1263,4 +1263,94 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_portrait_skin_match_prevents_blowout_and_extreme_whites() {
+        use crate::ai::color_match::match_color_and_tone;
+        use crate::params::DevelopParams;
+        use crate::pipeline::RawSourceImage;
+
+        let w = 100u32;
+        let h = 100u32;
+        let n = (w * h) as usize;
+
+        // Target: Scene-referred RAW (student in white uniform with skin + blue backdrop)
+        let mut tgt_rgb = vec![0.0f32; n * 3];
+        for i in 0..n {
+            if i < n / 3 {
+                // Blue studio backdrop
+                tgt_rgb[i * 3 + 0] = 0.05;
+                tgt_rgb[i * 3 + 1] = 0.12;
+                tgt_rgb[i * 3 + 2] = 0.35;
+            } else if i < (2 * n) / 3 {
+                // Student skin (Asian / Indonesian golden skin tone)
+                tgt_rgb[i * 3 + 0] = 0.32;
+                tgt_rgb[i * 3 + 1] = 0.22;
+                tgt_rgb[i * 3 + 2] = 0.14;
+            } else {
+                // Pure white uniform
+                tgt_rgb[i * 3 + 0] = 0.85;
+                tgt_rgb[i * 3 + 1] = 0.85;
+                tgt_rgb[i * 3 + 2] = 0.85;
+            }
+        }
+        let raw_tgt = RawSourceImage::from_linear_rgb(
+            w, h, w, h, tgt_rgb, 5975.0, 21.0, 0.25, true,
+        );
+
+        // Reference: Display-referred JPEG (teacher in khaki shirt with skin + blue backdrop)
+        let mut ref_rgb = vec![0.0f32; n * 3];
+        for i in 0..n {
+            if i < n / 3 {
+                // Blue studio backdrop
+                ref_rgb[i * 3 + 0] = 0.06;
+                ref_rgb[i * 3 + 1] = 0.14;
+                ref_rgb[i * 3 + 2] = 0.40;
+            } else if i < (2 * n) / 3 {
+                // Teacher skin
+                ref_rgb[i * 3 + 0] = 0.35;
+                ref_rgb[i * 3 + 1] = 0.24;
+                ref_rgb[i * 3 + 2] = 0.15;
+            } else {
+                // Khaki / brown shirt (high R/G, NOT white!)
+                ref_rgb[i * 3 + 0] = 0.42;
+                ref_rgb[i * 3 + 1] = 0.34;
+                ref_rgb[i * 3 + 2] = 0.25;
+            }
+        }
+        let raw_ref = RawSourceImage::from_linear_rgb(
+            w, h, w, h, ref_rgb, 5500.0, 0.0, 0.0, false,
+        );
+
+        let mut tgt_params = DevelopParams::default();
+        tgt_params.temperature = 5975.0;
+        tgt_params.tint = 21.0;
+        tgt_params.exposure_2012 = 0.0;
+
+        let matched = match_color_and_tone(&raw_ref, None, &raw_tgt, &tgt_params);
+
+        // CRITICAL VERIFICATION:
+        // 1. Exposure must NEVER blow out (in old code it jumped to +2.41 EV!)
+        assert!(
+            matched.exposure_2012 >= -0.65 && matched.exposure_2012 <= 0.65,
+            "Exposure was blown out or crushed: {}",
+            matched.exposure_2012
+        );
+
+        // 2. Whites must NEVER slam to -100 (in old code it went to -100!)
+        assert!(
+            matched.whites_2012 >= -25.0 && matched.whites_2012 <= 25.0,
+            "Whites slammed to extreme: {}",
+            matched.whites_2012
+        );
+
+        // 3. Color temperature should remain within flattering portrait bounds (delta <= 350K, NOT 7341K!)
+        let temp_delta = (matched.temperature - 5975.0).abs();
+        assert!(
+            temp_delta <= 350.0,
+            "Temperature jumped excessively into yellow/orange: delta = {} K (temp = {})",
+            temp_delta,
+            matched.temperature
+        );
+    }
 }
