@@ -93,6 +93,7 @@ jobs:
           path: |
             dist/*.exe
             dist/*.msi
+          if-no-files-found: warn
 
   # ==========================================================================
   # 3. Linux Build (.deb, .AppImage, tar.gz)
@@ -136,6 +137,7 @@ jobs:
             dist/*.deb
             dist/*.AppImage
             dist/*.tar.gz
+          if-no-files-found: warn
 
   # ==========================================================================
   # 4. Publish Release to GitHub

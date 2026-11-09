@@ -3,6 +3,7 @@ use crate::pipeline::RawSourceImage;
 use chrono::Local;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
@@ -1492,7 +1493,7 @@ pub fn detect_faces_and_focus_for_photo(
         return (Vec::new(), 50.0);
     }
 
-    let mut faces = Vec::new();
+    let mut faces: Vec<DetectedFace> = Vec::new();
     #[cfg(target_os = "macos")]
     {
         let mut raw_faces = [LightRawFaceInfo::default(); 16];
