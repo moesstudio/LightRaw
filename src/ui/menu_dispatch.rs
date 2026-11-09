@@ -593,6 +593,7 @@ impl LightRawApp {
             }
             194 => self.show_manage_presets_modal = true,
             195 => self.sync_crop_to_library(false),
+            196 => self.auto_match_color_to_reference(),
             _ => {}
         }
     }
@@ -1105,6 +1106,10 @@ impl LightRawApp {
                         }
                         if ui.add(egui::Button::new("Auto White Balance").shortcut_text(format!("{}{}U", mod_k, shift_k))).clicked() {
                             self.execute_menu_action(95);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("⚡ Match Color to Reference...").shortcut_text(format!("{}{}{}M", mod_k, alt_k, shift_k))).clicked() {
+                            self.execute_menu_action(196);
                             ui.close_menu();
                         }
                         if ui.add(egui::Button::new("Convert to Black & White").shortcut_text("V")).clicked() {

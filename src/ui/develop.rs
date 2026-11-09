@@ -854,6 +854,14 @@ fn render_panel_basic(app: &mut LightRawApp, ui: &mut Ui) {
                     app.apply_auto_tone_to_selection();
                     return;
                 }
+                if ui
+                    .button("⚡ Match Ref")
+                    .on_hover_text("Auto Match Color & Tone from Reference Photo")
+                    .clicked()
+                {
+                    app.auto_match_color_to_reference();
+                    return;
+                }
             });
         });
         ui.add_space(4.0);

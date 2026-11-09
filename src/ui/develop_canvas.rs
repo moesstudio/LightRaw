@@ -2785,6 +2785,28 @@ pub fn render_develop_toolbar(app: &mut LightRawApp, ui: &mut Ui) {
                                 }
                             }
                         });
+
+                    let has_ref = app.reference_photo_id.is_some()
+                        && app.reference_photo_id != Some(app.active_photo_id);
+                    let match_btn = ui.add_enabled(
+                        has_ref,
+                        egui::Button::new(
+                            RichText::new("⚡ Match Color to Ref")
+                                .size(11.5)
+                                .strong()
+                                .color(if has_ref {
+                                    Color32::from_rgb(255, 215, 0)
+                                } else {
+                                    Colors::TEXT_DIM
+                                }),
+                        ),
+                    );
+                    if match_btn
+                        .on_hover_text("Automatically analyze the Reference photo's colors, exposure, white balance, contrast, and color grading, and match this active photo to it.")
+                        .clicked()
+                    {
+                        app.auto_match_color_to_reference();
+                    }
                 }
 
                 let is_ba = matches!(

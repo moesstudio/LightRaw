@@ -1200,4 +1200,67 @@ mod tests {
         assert!(app.show_in_app_menubar);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_auto_match_color_to_reference() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "lightraw_match_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let mut app = crate::ui::LightRawApp::new(temp_dir.clone());
+
+        // Create Photo 1 (Target)
+        let mut p1 = create_empty_placeholder_photo();
+        p1.id = 1;
+        p1.file_name = "Target.RAW".into();
+        app.catalog_db.save_photo(&p1);
+        app.photos.push(p1);
+
+        // Create Photo 2 (Reference with warm golden tone, high contrast)
+        let mut p2 = create_empty_placeholder_photo();
+        p2.id = 2;
+        p2.file_name = "Golden_Reference.jpg".into();
+        p2.params.contrast_2012 = 35.0;
+        p2.params.vibrance = 25.0;
+        p2.params.temperature = 7200.0;
+        p2.params.split_toning_shadow_hue = 35.0;
+        p2.params.split_toning_shadow_saturation = 30.0;
+        app.catalog_db.save_photo(&p2);
+        app.photos.push(p2);
+
+        app.active_photo_id = 1;
+        app.reference_photo_id = Some(2);
+
+        // Populate mock RAW image buffers for both
+        use std::sync::Arc;
+        let mut raw_tgt = crate::pipeline::RawSourceImage::generate_sample_raw(0, 64, 64);
+        raw_tgt.rgb = vec![0.3f32; 64 * 64 * 3];
+        app.thumb_raw_cache.insert(1, Arc::new(raw_tgt));
+
+        let mut raw_ref = crate::pipeline::RawSourceImage::generate_sample_raw(1, 64, 64);
+        for i in 0..(64 * 64) {
+            raw_ref.rgb[i * 3 + 0] = 0.65;
+            raw_ref.rgb[i * 3 + 1] = 0.50;
+            raw_ref.rgb[i * 3 + 2] = 0.30;
+        }
+        app.thumb_raw_cache.insert(2, Arc::new(raw_ref));
+
+        // Execute Auto Match Color
+        app.auto_match_color_to_reference();
+
+        let updated_tgt = app.active_photo();
+        // Exposure should have increased because reference is brighter (0.5+ vs 0.3)
+        assert!(updated_tgt.params.exposure_2012 > 0.0);
+        // Temperature should have warmed up because reference has higher R/B ratio
+        assert!(updated_tgt.params.temperature > 5500.0);
+        // History step recorded
+        assert!(updated_tgt.history.last().unwrap().name.contains("Auto Match Color"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

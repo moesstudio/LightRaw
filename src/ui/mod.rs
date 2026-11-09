@@ -2662,6 +2662,61 @@ impl LightRawApp {
         self.status_message = "Calculated scene Auto White Balance.".into();
     }
 
+    pub fn auto_match_color_to_reference(&mut self) {
+        if self.photos.is_empty() {
+            return;
+        }
+
+        let ref_id = self
+            .reference_photo_id
+            .filter(|&id| id != self.active_photo_id)
+            .or_else(|| {
+                self.selected_photo_ids
+                    .iter()
+                    .copied()
+                    .find(|&id| id != self.active_photo_id)
+            })
+            .or_else(|| {
+                self.photos.iter().find(|p| p.id != self.active_photo_id).map(|p| p.id)
+            });
+
+        let Some(ref_id) = ref_id else {
+            self.status_message = "Please select or set a Reference Photo first.".into();
+            return;
+        };
+
+        self.reference_photo_id = Some(ref_id);
+
+        let ref_raw = self.ensure_thumb_raw(ref_id);
+        let active_raw = self.ensure_thumb_raw(self.active_photo_id);
+
+        let (Some(ref_raw), Some(active_raw)) = (ref_raw, active_raw) else {
+            self.status_message = "Could not decode reference or target image data for color matching.".into();
+            return;
+        };
+
+        let ref_params = self.photos.iter().find(|p| p.id == ref_id).map(|p| p.params.clone());
+        let ref_name = self
+            .photos
+            .iter()
+            .find(|p| p.id == ref_id)
+            .map(|p| p.file_name.clone())
+            .unwrap_or_else(|| "Reference".into());
+
+        let target_params = self.active_photo().params.clone();
+
+        let matched = crate::ai::color_match::match_color_and_tone(
+            &ref_raw,
+            ref_params.as_ref(),
+            &active_raw,
+            &target_params,
+        );
+
+        let step_desc = format!("Auto Match Color to {}", ref_name);
+        self.commit_params_change(&step_desc, matched);
+        self.status_message = format!("⚡ Matched color, white balance & tone to reference: {}", ref_name);
+    }
+
     pub fn save_xmp_sidecars_for_selection(&mut self) {
         let ids = if self.selected_photo_ids.is_empty() {
             vec![self.active_photo_id]
