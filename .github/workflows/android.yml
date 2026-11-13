@@ -27,13 +27,17 @@ jobs:
         with:
           build-root-directory: android
 
-      - name: Install Android NDK & SDK 35
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platforms;android-35
-            build-tools;35.0.0
-            ndk;27.2.12479018
+
+      - name: Install Android SDK 35 & NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          NDK_DIR="$(ls -d "$SDK_ROOT"/ndk/* 2>/dev/null | sort -V | tail -n 1)"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "Resolved ANDROID_NDK_HOME=$NDK_DIR"
 
       - name: Install Rust toolchain with Android targets
         uses: dtolnay/rust-toolchain@stable
