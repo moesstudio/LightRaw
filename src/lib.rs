@@ -6,6 +6,7 @@
 #![allow(float_literal_f32_fallback)]
 
 pub mod ai;
+#[cfg(feature = "desktop")]
 pub mod catalog;
 pub mod params;
 pub mod pipeline;
