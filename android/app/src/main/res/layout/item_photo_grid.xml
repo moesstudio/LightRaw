@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="3dp"
+    android:background="@color/lr_surface">
+
+    <ImageView
+        android:id="@+id/ivThumb"
+        android:layout_width="match_parent"
+        android:layout_height="130dp"
+        android:contentDescription="Photo thumbnail"
+        android:scaleType="centerCrop" />
+
+    <View
+        android:id="@+id/vSelectOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="130dp"
+        android:background="#442563EB"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tvBadgeRaw"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="5dp"
+        android:background="#B0080808"
+        android:paddingHorizontal="5dp"
+        android:paddingVertical="1dp"
+        android:text="RAW"
+        android:textColor="@color/lr_warning"
+        android:textSize="9.5sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="5dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <View
+            android:id="@+id/vColorLabelDot"
+            android:layout_width="10dp"
+            android:layout_height="10dp"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/bg_pill_neutral"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvBadgeFlag"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="#B0080808"
+            android:paddingHorizontal="5dp"
+            android:paddingVertical="1dp"
+            android:text="⚑"
+            android:textColor="@color/lr_success"
+            android:textSize="10sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvBadgeStars"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="5dp"
+        android:background="#B0080808"
+        android:paddingHorizontal="5dp"
+        android:paddingVertical="1dp"
+        android:text="★★★"
+        android:textColor="#FDE047"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tvBadgeEdited"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="5dp"
+        android:background="#B0080808"
+        android:paddingHorizontal="5dp"
+        android:paddingVertical="1dp"
+        android:text="ED"
+        android:textColor="@color/lr_accent_light"
+        android:textSize="9.5sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+</FrameLayout>

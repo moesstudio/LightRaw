@@ -7,13 +7,7 @@
 #![allow(float_literal_f32_fallback)]
 #![windows_subsystem = "windows"]
 
-pub mod ai;
-pub mod catalog;
-pub mod params;
-pub mod pipeline;
-pub mod presets;
-pub mod ui;
-pub mod watermark;
+pub use lightraw::{ai, catalog, params, pipeline, presets, ui, watermark};
 
 use eframe::egui;
 use std::path::PathBuf;

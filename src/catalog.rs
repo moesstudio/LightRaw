@@ -138,6 +138,7 @@ impl ColorLabel {
         self.as_str()
     }
 
+    #[cfg(feature = "desktop")]
     pub fn rgb(&self) -> Option<eframe::egui::Color32> {
         self.rgb_color()
             .map(|[r, g, b]| eframe::egui::Color32::from_rgb(r, g, b))

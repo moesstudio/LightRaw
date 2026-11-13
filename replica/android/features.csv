@@ -1,0 +1,41 @@
+feature,area,priority,original,clone,notes
+F01_01 Local Photo Grid & Dynamic Thumbnail Columns,Library (S01),must,yes,yes,Local RecyclerView grid with 2/3/4 column toggle
+F01_02 Device Gallery / MediaStore Image Picker (RAW+JPEG+PNG),Import (S02),must,yes,yes,OpenMultipleDocuments + SEND/VIEW intents + Sample studio pack
+F01_03 Star Ratings (0-5) & Pick/Reject Flags & Color Labels,Library (S01),must,yes,yes,"1-5 star & Pick/Reject + Red/Yellow/Green/Blue/Purple Color Labels in Loupe Rate Bar, Grid & Batch"
+F01_04 Library Search & Star/Pick/Color Filter Bar,Library (S01),must,yes,yes,Real-time Sort + Filter bar (All/Picked/Rejected/3*+/5*/RAW/Edited + Color Labels)
+F01_05 Albums & Quick Collection Organization,Library (S01),should,yes,yes,AgLibraryCollection table + Albums Bottom-Nav tab with create/rename/filter & batch assignment
+F01_06 Local SQLite Catalog Compatible with Desktop .lrcat,Storage,must,yes,yes,SQLiteOpenHelper using LightRawCatalog.lrcat schema (Adobe_images / DevelopSettings / Presets / History)
+F01_07 Cloud Album Sync / Oz Storage / Adobe ID Login,Cloud,skip,yes,skip,Intentionally skipped (local-first privacy design)
+F01_08 Multi-Select Batch Operations (Rate/Flag/Copy/Export/Delete),Library (S01),must,yes,yes,Long-press & Select toggle multi-select contextual bar
+F01_09 USB PTP Camera Tethering Import,Import (S02),could,yes,no,USB OTG PTP camera tethering not implemented (use SAF/Gallery import)
+F02_01 Touch Loupe Canvas with Pinch-Zoom & Pan,Loupe (S03),must,yes,yes,Custom LoupeImageView touch Matrix 1x-8x zoom + double-tap reset
+F02_02 Before / After Press-and-Hold Split Comparison,Loupe (S03),must,yes,yes,Long-press canvas to preview unedited original + BEFORE badge
+F02_03 Real-Time RGB & Luminance Histogram HUD,Loupe (S03),must,yes,yes,Live 256-bin R/G/B/L histogram HUD toggle
+F02_04 Non-Destructive Undo / Redo History & Versions Stack,Loupe (S03),must,yes,yes,In-memory + SQLite Adobe_libraryImageDevelopHistoryStep & named Snapshots
+F02_05 11-Stage PV2012 Light Panel (Exp/Con/Hi/Shd/Wht/Blk),Develop (S03),must,yes,yes,Linear/perceptual PV2012 tone stages shared with desktop math
+F02_06 Planckian Mired White Balance (Temp/Tint + Presets),Develop (S03),must,yes,yes,CIE 1960 UCS Temp 2000-50000K + Tint + Auto WB presets
+F02_07 Presence Panel (Texture/Clarity/Dehaze/Vibrance/Sat),Develop (S03),must,yes,yes,High-frequency micro-clarity & skin-safe vibrance/saturation
+F02_08 Interactive Parametric + Point + R/G/B Cubic Tone Curve,Curve (S04),must,yes,yes,Interactive ToneCurveView spline for Master & R/G/B channels + parametric sliders
+F02_09 8-Band HSL Color Mixer & B&W Grayscale Treatment,Mixer (S04),must,yes,yes,8 chromatic bands (Hue/Sat/Lum) + B&W 8-channel Gray Mixer
+F02_10 3-Way Color Grading Wheels & Split Toning,Grading (S04),should,yes,yes,Shadows/Midtones/Highlights/Global hue+sat+lum + balance/blending
+F02_11 Effects Panel (Post-Crop Vignette + Film Grain),Develop (S03),must,yes,yes,Post-crop radial vignette + grain amount/size/roughness
+F02_12 Detail Panel (Sharpening + Luminance NR + Color NR),Develop (S03),must,yes,yes,Unsharp mask + bilateral luminance/color noise smoothing
+F02_13 Optics & Lens Corrections (Distortion / Vignetting),Develop (S03),should,yes,yes,Radial barrel/pincushion UV remap & optical vignette compensation
+F02_14 Lens Blur (Focal Range & Bokeh Highlights),Develop (S03),could,yes,yes,Synthetic depth focus band & highlight bokeh
+F02_15 Camera Profiles (Color/Vivid/Landscape/Portrait/Mono),Develop (S03),should,yes,yes,Natural/Vivid/Landscape/Portrait/Neutral/Monochrome camera looks
+F03_01 One-Tap AI Auto Tone Calibration,AI (S03),must,yes,yes,Histogram percentile & tonal anchor auto exposure/contrast
+F03_02 AI Reference Photo Color & Tone Match,AI Match (S07),must,yes,yes,AiColorMatchEngine transfers luminance/skin-safe WB/curve/HSL from reference photo
+F03_03 Selective Masking (Linear/Radial/Brush + Local Sliders),Masking (S05),must,yes,yes,Interactive canvas masks (Radial/Linear/Brush) with per-mask Light/Color/Temp/Sat
+F03_04 Spot Heal / Blemish Remove Tool on Canvas,Masking (S05),should,yes,yes,Patch heal circles placed interactively on canvas + Undo/Clear
+F03_05 Interactive Crop / Straighten Dial / Aspect / Rotate & Flip,Crop (S06),must,yes,yes,Aspect presets + -45..+45 deg straighten + Rotate 90 + Flip H/V
+F03_06 Perspective Transform (Vertical / Horizontal / Aspect),Crop (S06),should,yes,yes,"Inverse projective warp (Vertical/Horizontal Keystone, Aspect, Scale, X/Y Offset) + XMP roundtrip"
+F04_01 Built-in Curated Presets Filmstrip + Amount Slider (0-200%),Presets (S08),must,yes,yes,Live thumbnail preset filmstrip across 6 categories + 0-200% intensity blend
+F04_02 Import & Export Adobe Camera Raw .xmp Presets via SAF,Presets (S08),must,yes,yes,Lossless CRS XML parser & Locale.US serializer via OpenDocument/CreateDocument
+F04_03 Create / Rename / Delete / Favorite User Presets,Presets (S08),must,yes,yes,"Save, Favorites ★ toggle/filter, Rename, Update settings, Delete & .xmp export in Presets panel"
+F05_01 Selective Copy Settings Checklist Modal,Copy/Paste (S09),must,yes,yes,Categorized CopySettingsMask checklist dialog
+F05_02 Paste / Batch Sync Develop Settings Across Photos,Copy/Paste (S09),must,yes,yes,Pastes copied mask onto active photo or multi-select batch in Grid
+F06_01 Text Watermark Editor (3x3 Anchor + Opacity + Size),Export (S10),must,yes,yes,"Custom text watermark with 3x3 anchor, scale, opacity & live preview"
+F06_02 Full-Resolution Non-Destructive Export to Gallery & Share,Export (S10),must,yes,yes,Full-res JPEG/PNG/WEBP export to Pictures/LightRaw & Share Intent via FileProvider
+F06_03 Multi-Photo Collage Layout Exporter (1x1 / 4:5 / 9:16),Collage (S10),could,yes,yes,Interactive 2-6 photo CollageActivity builder with gap & dark/light border
+F07_01 Pro Camera Capture (JPEG / RAW DNG + Manual ISO/EV),Camera (S11),should,yes,yes,"Camera2 ProCameraActivity with JPEG/RAW_SENSOR DNG, EV, flash & auto catalog import"
+F08_01 C2PA Content Credentials / Store Billing / Social Feed,Cloud,skip,yes,skip,Intentionally skipped (clean-room offline photography tool)

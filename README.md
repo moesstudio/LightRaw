@@ -1,19 +1,19 @@
-# LightRaw 1.0.0
+# LightRaw 1.1.0
 
 <p align="center">
   <img src="assets/icon.png" width="160" height="160" alt="LightRaw Logo" />
 </p>
 
 <p align="center">
-  <strong>Professional 32-Bit Linear RAW Photo Editor & Digital Asset Catalog</strong><br>
-  Crafted in Pure Rust with Native GPU Acceleration and Adobe Camera RAW (ACR PV2012) Pipeline Parity.
+  <strong>Professional 32-Bit Linear RAW Photo Editor & Digital Asset Catalog (Desktop & Android)</strong><br>
+  Crafted in Pure Rust with Native GPU Acceleration, Android Kotlin/Camera2 Pro RAW Studio, and Adobe Camera RAW (ACR PV2012) Pipeline Parity.
 </p>
 
 <p align="center">
-  <a href="#installers--downloads">Download Installers</a> •
-  <a href="#features">Features</a> •
-  <a href="#building-from-source">Build from Source</a> •
-  <a href="#architecture">Architecture</a>
+  <a href="#installers--downloads">Download Installers & APK</a> •
+  <a href="#highlights">Features</a> •
+  <a href="#android-edition-android">Android Edition</a> •
+  <a href="#building-from-source">Build from Source</a>
 </p>
 
 ---
@@ -21,7 +21,9 @@
 ## 🌟 Highlights
 
 * **11-Stage Non-Destructive RAW Pipeline**: 32-bit floating point linear processing matching ACR Process Version 2012 (PV2012), including White Balance, Tone Curves, HSL/Color, Color Grading, Detail/Sharpening with Alt-key mask preview, Lens Corrections, Transform & Upright, Effects (Post-Crop Vignette & Grain), Calibration, and HDR Edit Mode.
-* **120 FPS High-DPI UI**: Built on `egui` and `wgpu`/`glow`, maintaining butter-smooth 120 FPS rendering on Apple Silicon ProMotion displays and high-refresh monitors.
+* **AI Auto Tone & AI Match Ref**: Intelligent color and tone matching against reference photos with portrait skin protection and perceptual gamma scaling.
+* **Text & Graphic Watermarks**: 3×3 anchor grid, opacity, proportional/fit/fill sizing, rotation (`0°/90°/180°/270°`), custom PNG/JPG/WebP logo overlays, and built-in studio mark.
+* **120 FPS High-DPI Desktop UI**: Built on `egui` and `wgpu`/`glow`, maintaining butter-smooth 120 FPS rendering on Apple Silicon ProMotion displays and high-refresh monitors.
 * **Synchronized Library Cropping**: Full crop framing, aspect ratio presets, custom ratio locks, and straightening angle synchronization across individual photos, multi-selections, or the entire catalog.
 * **Contact Sheet & Fine Art Printing**: Multi-row/multi-column grid layouts, Picture Package, Custom Package, bleed guides, cut marks, custom margin controls, 300 PPI export to PDF/JPEG, and direct macOS printer integration.
 * **SQLite Asset Catalog**: Fast, durable `.lrcat` catalog storing image metadata, development history, virtual copies, collections, star ratings, color labels, and pick flags.
@@ -29,12 +31,40 @@
 
 ---
 
+## 📱 Android Edition (`android/`)
+
+LightRaw Android (`com.moestret.lightraw`, minSdk 26 / targetSdk 35) brings the offline-first darkroom workflow to mobile devices with an identical squircle visual identity:
+
+* **Camera2 Pro RAW Capture**: Manual ISO, shutter speed, EV compensation, WB presets, RAW (`DNG`) + `JPEG` simultaneous capture, level gauge & composition grids (`ProCameraActivity`).
+* **Loupe Editor (`LoupeEditorActivity`)**:
+  * Real-time PV2012 rendering via `KotlinPv2012Engine` with optional native Rust JNI core (`rust/lightraw_jni` -> `liblightraw_jni.so`).
+  * Interactive RGB & Parametric Tone Curves, 8-band HSL Mixer, 3-Way Color Grading Wheels, Split Toning, Effects, Detail, Geometry & Gesture Crop (`1:1`, `4:5`, `2:3`, `4:3`, `16:9`, straighten dial), Local Masks (Radial, Linear, Brush, Subject/Sky), and Spot Healing.
+  * Live Histogram HUD, Photo Info HUD, Undo/Redo, Versions, Press-and-Hold Before/After, Selective Copy/Paste Settings, and Grid Collage Builder (`CollageActivity`).
+* **Local-First Catalog & `.xmp` Parity**: Compatible `.lrcat` SQLite catalog, bi-directional ACR `.xmp` preset import/export, batch edit/export, and full-res JPEG/PNG/WebP export with Text or transparent Graphic Watermarks.
+
+### Building LightRaw Android
+* Open [`android/`](android/) directly in **Android Studio**, or build from CLI:
+  ```bash
+  cd android
+  ./gradlew lintDebug testDebugUnitTest assembleDebug assembleRelease
+  ```
+* Generated APKs are written under `android/app/build/outputs/apk/`.
+* *(Optional Native Rust JNI)* Build `liblightraw_jni.so` using `cargo-ndk`:
+  ```bash
+  cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -p 26 \
+    -o android/app/src/main/jniLibs \
+    build --release --manifest-path rust/lightraw_jni/Cargo.toml
+  ```
+
+---
+
 ## 📦 Installers & Downloads
 
-Pre-built binaries and installers are provided for every major platform in [GitHub Releases](https://github.com/moesstudio/LightRaw/releases):
+Pre-built desktop installers and Android `.apk` builds are provided in [GitHub Releases](https://github.com/moesstudio/LightRaw/releases) and GitHub Actions artifacts:
 
-| Platform | Installer Type | File Name | Notes |
+| Platform | Installer / Package Type | File Name | Notes |
 | :--- | :--- | :--- | :--- |
+| **Android** | Android Package (`.apk`) | `LightRaw-Android-release.apk` / `LightRaw-Android-debug.apk` | Android 8.0+ (SDK 26+), Camera2 RAW + Offline Catalog |
 | **macOS** | Disk Image (`.dmg`) | `LightRaw-1.0.0-macOS.dmg` | Drag & Drop to `/Applications` |
 | **Windows** | Setup Executable (`.exe`) | `LightRaw-1.0.0-Windows-Setup.exe` | Inno Setup with file associations |
 | **Windows** | Windows Installer (`.msi`) | `LightRaw-1.0.0.msi` | Enterprise WiX package |

@@ -153,11 +153,77 @@ jobs:
           if-no-files-found: warn
 
   # ==========================================================================
-  # 4. Publish Release to GitHub
+  # 4. Android Build (.apk + Native Rust JNI)
+  # ==========================================================================
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: android
+
+      - name: Install Android NDK & SDK 35
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018'
+
+      - name: Install Rust Toolchain for Android
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build liblightraw_jni.so
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/ndk/27.2.12479018"
+          mkdir -p android/app/src/main/jniLibs
+          cargo ndk \
+            -t arm64-v8a \
+            -t armeabi-v7a \
+            -t x86_64 \
+            -p 26 \
+            -o android/app/src/main/jniLibs \
+            build --release --manifest-path rust/lightraw_jni/Cargo.toml
+
+      - name: Build & Test Android APKs
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon lintDebug testDebugUnitTest assembleDebug assembleRelease
+
+      - name: Stage Android APKs
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk dist/LightRaw-Android-release.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/LightRaw-Android-debug.apk
+
+      - name: Upload Android Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            dist/LightRaw-Android-release.apk
+            dist/LightRaw-Android-debug.apk
+
+  # ==========================================================================
+  # 5. Publish Release to GitHub
   # ==========================================================================
   release:
     name: Publish GitHub Release
-    needs: [build-macos, build-windows, build-linux]
+    needs: [build-macos, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
@@ -182,22 +248,29 @@ jobs:
           name: linux-installers
           path: release_assets
 
+      - name: Download Android Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: release_assets
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: release_assets/*
-          name: "LightRaw 1.0.0"
+          name: "LightRaw ${{ github.ref_name }}"
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false
           body: |
-            ## LightRaw 1.0.0 — Official Release
+            ## LightRaw ${{ github.ref_name }} — Official Release
 
-            Professional 32-bit Linear RAW Photo Editor & Catalog by Moestret.
+            Professional 32-bit Linear RAW Photo Editor & Catalog by Moestret for Desktop & Android.
 
-            ### Available Installers:
+            ### Available Installers & APKs:
+            - **Android**: `LightRaw-Android-release.apk` & `LightRaw-Android-debug.apk`
             - **macOS**: `LightRaw-1.0.0-macOS.dmg` (Universal Drag & Drop Installer)
             - **Windows**: `LightRaw-1.0.0-Windows-Setup.exe` (Inno Setup) & `LightRaw-1.0.0.msi` (Windows Installer)
             - **Linux (Debian / Ubuntu / Mint)**: `lightraw_1.0.0_amd64.deb`
@@ -205,7 +278,8 @@ jobs:
 
             ### Key Features:
             - **Camera RAW Develop Pipeline**: 11-stage ACR PV2012 non-destructive float pipeline
-            - **120 FPS Performance**: Instant GPU-accelerated pan/zoom with zero stutter
+            - **Android Camera2 Pro RAW + AI Match**: DNG+JPEG pro capture, AI Auto Tone / Match Ref, `.xmp` presets, Text & Graphic watermarks
+            - **120 FPS Desktop Performance**: Instant GPU-accelerated pan/zoom with zero stutter
             - **Cropping Synchronization**: Sync crop framing, aspect ratio, and angle across photos or whole library
             - **Print & Publishing Module**: Contact Sheet, Picture Package, Custom Package, 300 PPI export
-            - **Native macOS & Cross-Platform UI**: Squircle macOS icon, full keyboard shortcuts, and clean catalog
+            - **Native macOS & Cross-Platform UI**: Squircle macOS/Android icon, full keyboard shortcuts, and `.lrcat` catalog

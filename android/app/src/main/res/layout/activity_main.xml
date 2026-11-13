@@ -1,0 +1,519 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/lr_bg"
+    android:fitsSystemWindows="true">
+
+    <!-- Top Darkroom App Bar -->
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@color/lr_surface"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="12dp"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <ImageView
+            android:id="@+id/tvBrandBadge"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:contentDescription="@string/app_name"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_lightraw_brand" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tvTopTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="All Photos"
+                android:textColor="@color/lr_text"
+                android:textSize="15.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvCatalogCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0 photos · Local .lrcat"
+                android:textColor="@color/lr_text_muted"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/btnSort"
+            android:layout_width="42dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Sort Photos"
+            android:src="@drawable/ic_lr_sort"
+            app:tint="@color/lr_text_secondary" />
+
+        <Button
+            android:id="@+id/btnColumns"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:minWidth="46dp"
+            android:text="3 Col"
+            android:textColor="@color/lr_text_secondary"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnSelectMode"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:minWidth="48dp"
+            android:text="Select"
+            android:textColor="@color/lr_accent_light"
+            android:textSize="12.5sp" />
+    </LinearLayout>
+
+    <!-- Search Input -->
+    <EditText
+        android:id="@+id/etSearch"
+        android:layout_width="match_parent"
+        android:layout_height="42dp"
+        android:layout_marginHorizontal="10dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/bg_card"
+        android:hint="@string/search_hint"
+        android:imeOptions="actionSearch"
+        android:inputType="text"
+        android:maxLines="1"
+        android:paddingHorizontal="14dp"
+        android:textColor="@color/lr_text"
+        android:textColorHint="@color/lr_text_muted"
+        android:textSize="13sp"
+        app:layout_constraintTop_toBottomOf="@id/topBar" />
+
+    <!-- Horizontal Facet Filter Chips -->
+    <HorizontalScrollView
+        android:id="@+id/filterScroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:paddingHorizontal="10dp"
+        android:scrollbars="none"
+        app:layout_constraintTop_toBottomOf="@id/etSearch">
+
+        <LinearLayout
+            android:id="@+id/filterContainer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
+
+    <!-- Albums Shelf (shown when Albums tab active) -->
+    <LinearLayout
+        android:id="@+id/albumsStrip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="6dp"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/filterScroll">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="COLLECTIONS &amp; ALBUMS (Long-press to remove)"
+                android:textColor="@color/lr_text_muted"
+                android:textSize="10.5sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnNewAlbum"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="+ New Album"
+                android:textColor="@color/lr_accent_light"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/albumsContainer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+    </LinearLayout>
+
+    <!-- Device Folder Import Header (shown when Device tab active) -->
+    <LinearLayout
+        android:id="@+id/deviceStrip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/lr_surface"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="8dp"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/albumsStrip">
+
+        <TextView
+            android:id="@+id/tvDeviceStatus"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Device MediaStore Photos · Tap any photo to edit"
+            android:textColor="@color/lr_text_secondary"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnDevicePickSaf"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="+ Files/RAW"
+            android:textSize="11.5sp" />
+    </LinearLayout>
+
+    <!-- Photo Grid -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvPhotos"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:clipToPadding="false"
+        android:padding="5dp"
+        app:layout_constraintBottom_toTopOf="@id/quickAddRow"
+        app:layout_constraintTop_toBottomOf="@id/deviceStrip" />
+
+    <!-- Empty Catalog Card -->
+    <LinearLayout
+        android:id="@+id/emptyState"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="24dp"
+        android:background="@drawable/bg_card"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/quickAddRow"
+        app:layout_constraintTop_toBottomOf="@id/deviceStrip">
+
+        <TextView
+            android:id="@+id/tvEmptyTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/empty_title"
+            android:textColor="@color/lr_text"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvEmptyDesc"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="@string/empty_desc"
+            android:textColor="@color/lr_text_muted"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnEmptyImport"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:backgroundTint="@color/lr_accent"
+                android:maxLines="1"
+                android:minHeight="48dp"
+                android:text="@string/import_photos"
+                android:textColor="@color/lr_on_accent"
+                android:textSize="12.5sp" />
+
+            <Button
+                android:id="@+id/btnEmptySample"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:maxLines="1"
+                android:minHeight="48dp"
+                android:text="@string/try_samples"
+                android:textColor="@color/lr_text"
+                android:textSize="12.5sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Compact Action Row above Bottom Navigation -->
+    <LinearLayout
+        android:id="@+id/quickAddRow"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:background="@color/lr_bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="10dp"
+        app:layout_constraintBottom_toTopOf="@id/bottomDock">
+
+        <Button
+            android:id="@+id/btnImportGallery"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:backgroundTint="@color/lr_accent"
+            android:text="+ Import RAW / Gallery"
+            android:textColor="@color/lr_on_accent"
+            android:textSize="12.5sp" />
+
+        <Button
+            android:id="@+id/btnAddSamples"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="wrap_content"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:text="Studio Samples"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Bottom Dock: 4-Tab Navigation OR Multi-Select Batch Bar -->
+    <LinearLayout
+        android:id="@+id/bottomDock"
+        android:layout_width="match_parent"
+        android:layout_height="62dp"
+        android:background="@color/lr_surface"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <!-- Standard Lightroom Bottom Navigation -->
+        <LinearLayout
+            android:id="@+id/dockNormal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="horizontal"
+            android:weightSum="4">
+
+            <LinearLayout
+                android:id="@+id/navPhotos"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackground"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/ivNavPhotos"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_lr_photos"
+                    app:tint="@color/lr_accent_light" />
+
+                <TextView
+                    android:id="@+id/tvNavPhotos"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Photos"
+                    android:textColor="@color/lr_accent_light"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/navAlbums"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackground"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/ivNavAlbums"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_lr_albums"
+                    app:tint="@color/lr_text_muted" />
+
+                <TextView
+                    android:id="@+id/tvNavAlbums"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Albums"
+                    android:textColor="@color/lr_text_muted"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/navDevice"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackground"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/ivNavDevice"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_lr_device"
+                    app:tint="@color/lr_text_muted" />
+
+                <TextView
+                    android:id="@+id/tvNavDevice"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Device"
+                    android:textColor="@color/lr_text_muted"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/navCamera"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackground"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/ivNavCamera"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_lr_camera"
+                    app:tint="@color/lr_text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Camera"
+                    android:textColor="@color/lr_text"
+                    android:textSize="11sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Multi-Select Batch Action Bar -->
+        <HorizontalScrollView
+            android:id="@+id/dockBatch"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="6dp">
+
+                <Button
+                    android:id="@+id/btnBatchRate"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Rate ★"
+                    android:textColor="@color/lr_text" />
+
+                <Button
+                    android:id="@+id/btnBatchPick"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Pick ⚑"
+                    android:textColor="@color/lr_text" />
+
+                <Button
+                    android:id="@+id/btnBatchColor"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Color ●"
+                    android:textColor="@color/lr_text" />
+
+                <Button
+                    android:id="@+id/btnBatchAlbum"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Album"
+                    android:textColor="@color/lr_text" />
+
+                <Button
+                    android:id="@+id/btnBatchCopy"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Copy"
+                    android:textColor="@color/lr_text" />
+
+                <Button
+                    android:id="@+id/btnBatchPaste"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Paste"
+                    android:textColor="@color/lr_accent_light" />
+
+                <Button
+                    android:id="@+id/btnBatchCollage"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Collage"
+                    android:textColor="@color/lr_text" />
+
+                <Button
+                    android:id="@+id/btnBatchExport"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Export"
+                    android:textColor="@color/lr_success" />
+
+                <Button
+                    android:id="@+id/btnBatchDelete"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="Remove"
+                    android:textColor="@color/lr_danger" />
+            </LinearLayout>
+        </HorizontalScrollView>
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

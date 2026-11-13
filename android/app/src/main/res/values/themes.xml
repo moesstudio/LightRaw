@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.LightRaw" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/lr_accent</item>
+        <item name="colorOnPrimary">@color/lr_on_accent</item>
+        <item name="colorSurface">@color/lr_surface</item>
+        <item name="colorOnSurface">@color/lr_text</item>
+        <item name="android:colorBackground">@color/lr_bg</item>
+        <item name="android:windowBackground">@color/lr_bg</item>
+        <item name="android:statusBarColor">@color/lr_bg</item>
+        <item name="android:navigationBarColor">@color/lr_surface</item>
+    </style>
+</resources>

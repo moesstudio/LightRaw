@@ -30,12 +30,31 @@ Icon
 
 # Reference Third-Party Apps & Raw Media
 Adobe Lightroom Classic.app/
+*.xapk
 Screenshoot/
 Screenshots/
 *.raw
+*.dng
+*.DNG
 *.CR2
 *.NEF
 *.ARW
+
+# Android / Gradle / NDK Build Artifacts
+android/.gradle/
+android/.kotlin/
+android/.cxx/
+android/**/build/
+android/captures/
+android/local.properties
+android/app/src/main/jniLibs/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.hprof
+rust/lightraw_jni/target/
+release_assets/
 
 # IDE & Editor Configs
 .idea/

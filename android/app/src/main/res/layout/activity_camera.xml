@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/lr_bg"
+    android:fitsSystemWindows="true">
+
+    <!-- OLED Pro Camera Top HUD Bar -->
+    <LinearLayout
+        android:id="@+id/camTopBar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@color/lr_bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="6dp"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <ImageButton
+            android:id="@+id/btnCamClose"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Close Camera"
+            android:src="@drawable/ic_lr_back"
+            app:tint="@color/lr_text" />
+
+        <Button
+            android:id="@+id/btnCamFlash"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="8dp"
+            android:text="Flash Off"
+            android:textAllCaps="false"
+            android:textColor="@color/lr_text_secondary"
+            android:textSize="11.5sp" />
+
+        <TextView
+            android:id="@+id/tvCamFormatBadge"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="PRO · JPEG"
+            android:textColor="@color/lr_warning"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnCamGrid"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="8dp"
+            android:text="Grid"
+            android:textAllCaps="false"
+            android:textColor="@color/lr_text_muted"
+            android:textSize="11.5sp" />
+
+        <Button
+            android:id="@+id/btnCamSwitch"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="10dp"
+            android:text="Flip"
+            android:textAllCaps="false"
+            android:textColor="@color/lr_accent_light"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Viewfinder + Composition Grid Overlay -->
+    <FrameLayout
+        android:id="@+id/camPreviewContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        app:layout_constraintBottom_toTopOf="@id/camControls"
+        app:layout_constraintTop_toBottomOf="@id/camTopBar">
+
+        <TextureView
+            android:id="@+id/camPreview"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <com.moestret.lightraw.ui.views.CameraGridOverlayView
+            android:id="@+id/cameraGridOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- Bottom Pro Camera Controls -->
+    <LinearLayout
+        android:id="@+id/camControls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/lr_bg"
+        android:orientation="vertical"
+        android:paddingHorizontal="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="14dp"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <!-- White Balance Pill Strip + DNG Toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="38dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <HorizontalScrollView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/wbStripContainer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
+
+            <Switch
+                android:id="@+id/swCamRaw"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:text="DNG"
+                android:textColor="@color/lr_text"
+                android:textSize="11.5sp" />
+        </LinearLayout>
+
+        <!-- Exposure Compensation Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvEvValue"
+                android:layout_width="70dp"
+                android:layout_height="wrap_content"
+                android:text="EV +0.0"
+                android:textColor="@color/lr_text"
+                android:textSize="12sp" />
+
+            <SeekBar
+                android:id="@+id/sbCamEv"
+                android:layout_width="0dp"
+                android:layout_height="34dp"
+                android:layout_weight="1"
+                android:max="24"
+                android:progress="12" />
+        </LinearLayout>
+
+        <!-- Shutter Bar: Last Photo Thumb | Circular Shutter | Active WB Status -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="76dp"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/ivLastCapture"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:background="@color/lr_surface_elevated"
+                android:contentDescription="Last Captured Photo"
+                android:scaleType="centerCrop" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <ImageButton
+                android:id="@+id/btnShutter"
+                android:layout_width="66dp"
+                android:layout_height="66dp"
+                android:background="@drawable/bg_shutter_ring"
+                android:contentDescription="Capture Photo" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/tvCamWbBadge"
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:gravity="end"
+                android:text="AWB"
+                android:textColor="@color/lr_text_secondary"
+                android:textSize="11.5sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

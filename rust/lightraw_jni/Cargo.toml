@@ -1,0 +1,15 @@
+[package]
+name = "lightraw_jni"
+version = "1.0.0"
+edition = "2021"
+description = "JNI native library exposing LightRaw core PV2012 RAW & AI engine to Android"
+
+[lib]
+name = "lightraw_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+lightraw = { path = "../..", default-features = false }
+jni = "0.21"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

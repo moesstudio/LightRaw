@@ -1,0 +1,2 @@
+-keep class com.moestret.lightraw.engine.NativeBridge { *; }
+-dontwarn com.moestret.lightraw.engine.NativeBridge
