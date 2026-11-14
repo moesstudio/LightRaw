@@ -1,7 +1,51 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+fun parseSemverCode(ver: String): Int {
+    val parts = ver.removePrefix("v").removePrefix("V")
+        .substringBefore("-")
+        .split(".")
+        .take(3)
+        .map { it.toIntOrNull() ?: 0 }
+    val major = parts.getOrElse(0) { 1 }
+    val minor = parts.getOrElse(1) { 0 }
+    val patch = parts.getOrElse(2) { 0 }
+    return (major * 10000 + minor * 100 + patch).coerceAtLeast(120)
+}
+
+val appVersionName: String = (project.findProperty("LIGHTRAW_VERSION_NAME") as String?)
+    ?.takeIf { it.isNotBlank() }
+    ?: System.getenv("LIGHTRAW_VERSION_NAME")?.takeIf { it.isNotBlank() }
+    ?: "1.2.0"
+val appVersionCode: Int = parseSemverCode(appVersionName)
+
+val localKeystorePropsFile = rootProject.file("keystore.properties")
+val localKeystoreProps = Properties().apply {
+    if (localKeystorePropsFile.isFile) {
+        localKeystorePropsFile.inputStream().use { load(it) }
+    }
+}
+
+val releaseKeystorePath = System.getenv("LIGHTRAW_KEYSTORE_PATH")
+    ?.takeIf { it.isNotBlank() }
+    ?: localKeystoreProps.getProperty("storeFile")?.takeIf { it.isNotBlank() }
+val releaseKeystoreFile = releaseKeystorePath?.let { path ->
+    val f = file(path)
+    if (f.isFile) f else rootProject.file(path).takeIf { it.isFile }
+}
+val releaseKeystorePassword = System.getenv("LIGHTRAW_KEYSTORE_PASSWORD")
+    ?.takeIf { it.isNotBlank() }
+    ?: localKeystoreProps.getProperty("storePassword")
+val releaseKeyAlias = System.getenv("LIGHTRAW_KEY_ALIAS")
+    ?.takeIf { it.isNotBlank() }
+    ?: localKeystoreProps.getProperty("keyAlias")
+val releaseKeyPassword = System.getenv("LIGHTRAW_KEY_PASSWORD")
+    ?.takeIf { it.isNotBlank() }
+    ?: localKeystoreProps.getProperty("keyPassword")
 
 android {
     namespace = "com.moestret.lightraw"
@@ -11,10 +55,26 @@ android {
         applicationId = "com.moestret.lightraw"
         minSdk = 26
         targetSdk = 35
-        versionCode = 110
-        versionName = "1.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (
+            releaseKeystoreFile != null &&
+            !releaseKeystorePassword.isNullOrBlank() &&
+            !releaseKeyAlias.isNullOrBlank() &&
+            !releaseKeyPassword.isNullOrBlank()
+        ) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -24,7 +84,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
         }
         debug {
             applicationIdSuffix = ".debug"

@@ -50,13 +50,16 @@ class LoupeEditorActivity : AppCompatActivity() {
     private var currentPhotoIndex = 0
     private var asset: PhotoAsset? = null
     private var previewSource: Bitmap? = null
+    private var scrubPreviewSource: Bitmap? = null
     private var currentParams = DevelopParams()
 
     private val undoStack = ArrayDeque<DevelopParams>()
     private val redoStack = ArrayDeque<DevelopParams>()
 
     private var activeTab = LoupePanels.ToolTab.LIGHT
-    private var renderJob: Job? = null
+    private var renderWorkerJob: Job? = null
+    private var pendingRenderDraft: Boolean? = null
+    private var photoGeneration: Long = 0L
     private var pendingXmpExport: DevelopPreset? = null
     private var pendingWatermarkGraphicCallback: ((String, String) -> Unit)? = null
     private var isInfoHudVisible = false
@@ -180,7 +183,10 @@ class LoupeEditorActivity : AppCompatActivity() {
     private fun switchToPhotoIndex(newIdx: Int) {
         if (newIdx !in catalogIds.indices) return
         val nextAsset = catalog.getPhotoById(catalogIds[newIdx]) ?: return
-        renderJob?.cancel()
+        photoGeneration++
+        pendingRenderDraft = null
+        renderWorkerJob?.cancel()
+        renderWorkerJob = null
         currentPhotoIndex = newIdx
         asset = nextAsset
         currentParams = nextAsset.params.deepCopy()
@@ -464,8 +470,29 @@ class LoupeEditorActivity : AppCompatActivity() {
                 bmp.recycle()
                 return@launch
             }
+            val prevScrub = scrubPreviewSource
+            val prevPreview = previewSource
+            val maxDim = kotlin.math.max(bmp.width, bmp.height).coerceAtLeast(1)
+            val scrubBmp = if (maxDim > 540) {
+                val sc = 540f / maxDim.toFloat()
+                Bitmap.createScaledBitmap(
+                    bmp,
+                    (bmp.width * sc).toInt().coerceAtLeast(16),
+                    (bmp.height * sc).toInt().coerceAtLeast(16),
+                    true
+                )
+            } else {
+                bmp
+            }
             previewSource = bmp
+            scrubPreviewSource = scrubBmp
             binding.loupeView.setImages(bmp, bmp, currentParams)
+            if (prevScrub != null && prevScrub != prevPreview && !prevScrub.isRecycled) {
+                prevScrub.recycle()
+            }
+            if (prevPreview != null && !prevPreview.isRecycled) {
+                prevPreview.recycle()
+            }
             rebuildActivePanel()
             schedulePreviewRender(draft = false)
         }
@@ -478,7 +505,9 @@ class LoupeEditorActivity : AppCompatActivity() {
             redoStack.clear()
         }
         currentParams = newParams
-        binding.loupeView.updateParamsOverlay(currentParams)
+        if (binding.loupeView.mode != LoupeImageView.InteractionMode.VIEW) {
+            binding.loupeView.updateParamsOverlay(currentParams)
+        }
         if (commit) {
             val pid = asset?.idLocal ?: return
             catalog.saveDevelopParams(pid, currentParams)
@@ -491,17 +520,44 @@ class LoupeEditorActivity : AppCompatActivity() {
         schedulePreviewRender(draft = !commit)
     }
 
+    /**
+     * Conflated single-worker render scheduler: never cancels a nearly-finished interactive frame,
+     * so dragging sliders (Exposure, Contrast, Temp, etc.) streams smooth updates continuously and
+     * upgrades to full 1280px detail on release.
+     */
     private fun schedulePreviewRender(draft: Boolean) {
-        val src = previewSource ?: return
-        val paramsSnapshot = currentParams.deepCopy()
-        val applyCrop = binding.loupeView.mode != LoupeImageView.InteractionMode.CROP
-        renderJob?.cancel()
-        renderJob = scope.launch {
-            val result = withContext(Dispatchers.Default) {
-                KotlinPv2012Engine.render(src, paramsSnapshot, draftInteractive = draft, applyCrop = applyCrop)
+        if (previewSource == null) return
+        pendingRenderDraft = draft
+        if (renderWorkerJob?.isActive == true) return
+        renderWorkerJob = scope.launch {
+            while (true) {
+                val isDraft = pendingRenderDraft ?: break
+                pendingRenderDraft = null
+                val gen = photoGeneration
+                val fullSrc = previewSource ?: break
+                val src = if (isDraft) (scrubPreviewSource ?: fullSrc) else fullSrc
+                if (src.isRecycled) break
+
+                val paramsSnapshot = currentParams.deepCopy()
+                val applyCrop = binding.loupeView.mode != LoupeImageView.InteractionMode.CROP
+
+                val result = withContext(Dispatchers.Default) {
+                    KotlinPv2012Engine.render(
+                        src,
+                        paramsSnapshot,
+                        draftInteractive = isDraft,
+                        applyCrop = applyCrop
+                    )
+                }
+                if (gen != photoGeneration || isDestroyed) break
+                binding.loupeView.setImages(result.bitmap, fullSrc, paramsSnapshot)
+                binding.histogramView.updateHistograms(
+                    result.histR,
+                    result.histG,
+                    result.histB,
+                    result.histLum
+                )
             }
-            binding.loupeView.setImages(result.bitmap, src, paramsSnapshot)
-            binding.histogramView.updateHistograms(result.histR, result.histG, result.histB, result.histLum)
         }
     }
 
@@ -687,7 +743,12 @@ class LoupeEditorActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        renderJob?.cancel()
+        photoGeneration++
+        pendingRenderDraft = null
+        renderWorkerJob?.cancel()
+        if (scrubPreviewSource != previewSource) {
+            scrubPreviewSource?.recycle()
+        }
         previewSource?.recycle()
     }
 }

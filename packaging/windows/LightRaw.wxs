@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
     <Product Id="*"
-             Name="LightRaw 1.0.0"
+             Name="LightRaw 1.2.0"
              Language="1033"
-             Version="1.0.0.0"
+             Version="1.2.0.0"
              Manufacturer="Moestret"
              UpgradeCode="A2D3C4B5-E6F7-4819-B0A1-C2D3E4F5A6B7">
 
@@ -12,7 +12,7 @@
                  InstallScope="perMachine"
                  Platform="x64"
                  Description="LightRaw Professional RAW Photo Editor &amp; Catalog"
-                 Comments="LightRaw 1.0.0 Installer" />
+                 Comments="LightRaw 1.2.0 Installer" />
 
         <MajorUpgrade DowngradeErrorMessage="A newer version of LightRaw is already installed." />
         <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
@@ -71,7 +71,7 @@
             </Component>
         </DirectoryRef>
 
-        <Feature Id="ProductFeature" Title="LightRaw 1.0.0" Level="1">
+        <Feature Id="ProductFeature" Title="LightRaw 1.2.0" Level="1">
             <ComponentRef Id="MainExecutable" />
             <ComponentRef Id="AssetsComponent" />
             <ComponentRef Id="ApplicationShortcut" />

@@ -2,11 +2,12 @@
 set -euo pipefail
 
 # Build Universal Linux AppImage (runs on Ubuntu, Fedora, Arch, Debian, openSUSE)
+VERSION="${LIGHTRAW_VERSION:-1.2.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_DIR="${DIST_DIR}/AppDir"
 
-echo "==> Preparing AppDir for LightRaw 1.0.0..."
+echo "==> Preparing AppDir for LightRaw ${VERSION}..."
 rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/usr/bin"
 mkdir -p "${APP_DIR}/usr/share/applications"
@@ -32,13 +33,13 @@ chmod 755 "${APP_DIR}/AppRun"
 
 mkdir -p "${DIST_DIR}"
 # Always produce clean standalone Linux tarball
-tar -czf "${DIST_DIR}/lightraw-1.0.0-linux-x86_64.tar.gz" -C "${APP_DIR}" .
-echo "==> Successfully built: ${DIST_DIR}/lightraw-1.0.0-linux-x86_64.tar.gz"
+tar -czf "${DIST_DIR}/lightraw-${VERSION}-linux-x86_64.tar.gz" -C "${APP_DIR}" .
+echo "==> Successfully built: ${DIST_DIR}/lightraw-${VERSION}-linux-x86_64.tar.gz"
 
 if command -v appimagetool >/dev/null 2>&1; then
     export APPIMAGE_EXTRACT_AND_RUN=1
-    ARCH=x86_64 appimagetool --appimage-extract-and-run "${APP_DIR}" "${DIST_DIR}/LightRaw-1.0.0-x86_64.AppImage" || true
-    if [ -f "${DIST_DIR}/LightRaw-1.0.0-x86_64.AppImage" ]; then
-        echo "==> Successfully built: ${DIST_DIR}/LightRaw-1.0.0-x86_64.AppImage"
+    ARCH=x86_64 appimagetool --appimage-extract-and-run "${APP_DIR}" "${DIST_DIR}/LightRaw-${VERSION}-x86_64.AppImage" || true
+    if [ -f "${DIST_DIR}/LightRaw-${VERSION}-x86_64.AppImage" ]; then
+        echo "==> Successfully built: ${DIST_DIR}/LightRaw-${VERSION}-x86_64.AppImage"
     fi
 fi

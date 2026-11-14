@@ -26,6 +26,14 @@ jobs:
       - name: Build Release Binary
         run: cargo build --release
 
+      - name: Resolve release version
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "LIGHTRAW_VERSION=1.2.0" >> "$GITHUB_ENV"
+          fi
+
       - name: Package LightRaw.app
         run: |
           mkdir -p LightRaw.app/Contents/MacOS
@@ -33,6 +41,10 @@ jobs:
           cp target/release/lightraw LightRaw.app/Contents/MacOS/LightRaw
           chmod +x LightRaw.app/Contents/MacOS/LightRaw
           cp LightRaw.icns LightRaw.app/Contents/Resources/LightRaw.icns || true
+          if [ -f LightRaw.app/Contents/Info.plist ]; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${LIGHTRAW_VERSION}" LightRaw.app/Contents/Info.plist || true
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${LIGHTRAW_VERSION}" LightRaw.app/Contents/Info.plist || true
+          fi
 
       - name: Build macOS DMG Installer
         run: |
@@ -87,16 +99,26 @@ jobs:
             }
           }
 
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $ref = $env:GITHUB_REF_NAME
+          if ($ref -and $ref.StartsWith("v")) { $ver = $ref.Substring(1) } else { $ver = "1.2.0" }
+          "LIGHTRAW_VERSION=$ver" >> $env:GITHUB_ENV
+
       - name: Build Inno Setup Installer (.exe)
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging/windows/LightRaw.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$env:LIGHTRAW_VERSION" packaging/windows/LightRaw.iss
 
       - name: Build WiX Installer (.msi)
         shell: pwsh
         run: |
           wix extension add WixToolset.UI.wixext || true
-          wix build -arch x64 packaging/windows/LightRaw.wxs -o dist/LightRaw-1.0.0.msi || true
+          $wxs = Get-Content packaging/windows/LightRaw.wxs -Raw
+          $wxs = $wxs -replace '1\.2\.0\.0', "$($env:LIGHTRAW_VERSION).0" -replace 'LightRaw 1\.2\.0', "LightRaw $($env:LIGHTRAW_VERSION)"
+          Set-Content -Path packaging/windows/LightRaw.wxs -Value $wxs -Encoding UTF8
+          wix build -arch x64 packaging/windows/LightRaw.wxs -o "dist/LightRaw-$($env:LIGHTRAW_VERSION).msi" || true
 
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
@@ -127,6 +149,14 @@ jobs:
 
       - name: Build Linux Release Binary
         run: cargo build --release
+
+      - name: Resolve release version
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "LIGHTRAW_VERSION=1.2.0" >> "$GITHUB_ENV"
+          fi
 
       - name: Build Debian Package (.deb)
         run: |
@@ -221,6 +251,39 @@ jobs:
             --manifest-path rust/lightraw_jni/Cargo.toml \
             build --release
 
+      - name: Restore cached Android debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: lightraw-android-debug-keystore-v1
+
+      - name: Configure Android signing & version
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            echo "LIGHTRAW_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "LIGHTRAW_VERSION_NAME=1.2.0" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "${GITHUB_WORKSPACE}/android/lightraw-release.jks"
+            echo "LIGHTRAW_KEYSTORE_PATH=${GITHUB_WORKSPACE}/android/lightraw-release.jks" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_KEYSTORE_PASSWORD=${KEYSTORE_PASS}" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_KEY_ALIAS=${KEY_ALIAS}" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_KEY_PASSWORD=${KEY_PASS}" >> "$GITHUB_ENV"
+            echo "Configured persistent release keystore from GitHub Secrets."
+          else
+            if [ ! -f "$HOME/.android/debug.keystore" ]; then
+              mkdir -p "$HOME/.android"
+              keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            echo "Using persistent cached Android debug keystore."
+          fi
+
       - name: Build & Test Android APKs
         working-directory: android
         run: |
@@ -277,6 +340,14 @@ jobs:
           name: android-apk
           path: release_assets
 
+      - name: Resolve release version
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "LIGHTRAW_VERSION=1.2.0" >> "$GITHUB_ENV"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
@@ -294,12 +365,14 @@ jobs:
 
             ### Available Installers & APKs:
             - **Android**: `LightRaw-Android-release.apk` & `LightRaw-Android-debug.apk`
-            - **macOS**: `LightRaw-1.0.0-macOS.dmg` (Universal Drag & Drop Installer)
-            - **Windows**: `LightRaw-1.0.0-Windows-Setup.exe` (Inno Setup) & `LightRaw-1.0.0.msi` (Windows Installer)
-            - **Linux (Debian / Ubuntu / Mint)**: `lightraw_1.0.0_amd64.deb`
-            - **Linux (Universal)**: `LightRaw-1.0.0-x86_64.AppImage` & `lightraw-1.0.0-linux-x86_64.tar.gz`
+            - **macOS**: `LightRaw-${{ env.LIGHTRAW_VERSION }}-macOS.dmg` (Universal Drag & Drop Installer)
+            - **Windows**: `LightRaw-${{ env.LIGHTRAW_VERSION }}-Windows-Setup.exe` (Inno Setup) & `LightRaw-${{ env.LIGHTRAW_VERSION }}.msi` (Windows Installer)
+            - **Linux (Debian / Ubuntu / Mint)**: `lightraw_${{ env.LIGHTRAW_VERSION }}_amd64.deb`
+            - **Linux (Universal)**: `LightRaw-${{ env.LIGHTRAW_VERSION }}-x86_64.AppImage` & `lightraw-${{ env.LIGHTRAW_VERSION }}-linux-x86_64.tar.gz`
 
-            ### Key Features:
+            ### Key Features & Improvements:
+            - **Real-Time Interactive Slider Editing**: Smooth real-time preview while dragging Exposure and Develop sliders on both Desktop (`1024px` draft + zero-lag zoom cache) and Android (conflated single-worker `540px` bilinear preview + automatic full-res settle)
+            - **Built-In Auto-Update**: In-app GitHub Releases updater on both Desktop and Android so you can upgrade in place without uninstalling or losing your catalog, photos, and presets
             - **Camera RAW Develop Pipeline**: 11-stage ACR PV2012 non-destructive float pipeline
             - **Android Camera2 Pro RAW + AI Match**: DNG+JPEG pro capture, AI Auto Tone / Match Ref, `.xmp` presets, Text & Graphic watermarks
             - **120 FPS Desktop Performance**: Instant GPU-accelerated pan/zoom with zero stutter

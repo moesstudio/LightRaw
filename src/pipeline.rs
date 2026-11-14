@@ -1007,7 +1007,7 @@ pub fn render_develop_pipeline(
         } else {
             (base_w.max(16), base_h.max(16))
         };
-        let sc = 2560.0 / (raw_w.max(raw_h) as f32).max(2560.0);
+        let sc = 1024.0 / (raw_w.max(raw_h) as f32).max(1024.0);
         (
             ((raw_w as f32 * sc).round() as u32).max(16),
             ((raw_h as f32 * sc).round() as u32).max(16),

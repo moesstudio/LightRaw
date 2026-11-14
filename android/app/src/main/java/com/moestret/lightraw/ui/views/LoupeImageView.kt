@@ -94,6 +94,7 @@ class LoupeImageView @JvmOverloads constructor(
         strokeWidth = 3f
         pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
     }
+    private val imageDrawPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     private var dragCorner = -1 // 0=TL,1=TR,2=BR,3=BL,4=ALL
     private var lastTouchX = 0f
@@ -214,7 +215,7 @@ class LoupeImageView @JvmOverloads constructor(
         if (bmp == null || bmp.isRecycled) return
 
         val rect = computeImageBounds(bmp)
-        canvas.drawBitmap(bmp, null, rect, null)
+        canvas.drawBitmap(bmp, null, rect, imageDrawPaint)
 
         when (mode) {
             InteractionMode.CROP -> drawCropOverlay(canvas, rect)

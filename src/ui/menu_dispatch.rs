@@ -489,6 +489,7 @@ impl LightRawApp {
                 self.about_tab = 0;
             },
             161 | 162 => self.show_shortcuts_modal = true,
+            163 => self.trigger_update_check(true),
 
             // 10. Extended Menu Actions (170..=194)
             170 => {
@@ -1392,6 +1393,10 @@ impl LightRawApp {
                             ui.close_menu();
                         }
                         ui.separator();
+                        if ui.add(egui::Button::new("Check for Updates...")).clicked() {
+                            self.execute_menu_action(163);
+                            ui.close_menu();
+                        }
                         if ui.add(egui::Button::new("About LightRaw Classic...").shortcut_text(if cfg!(target_os = "macos") { "⌘I" } else { "" })).clicked() {
                             self.execute_menu_action(1);
                             ui.close_menu();

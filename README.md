@@ -1,4 +1,4 @@
-# LightRaw 1.1.0
+# LightRaw 1.2.0
 
 <p align="center">
   <img src="assets/icon.png" width="160" height="160" alt="LightRaw Logo" />
@@ -27,6 +27,8 @@
 * **Synchronized Library Cropping**: Full crop framing, aspect ratio presets, custom ratio locks, and straightening angle synchronization across individual photos, multi-selections, or the entire catalog.
 * **Contact Sheet & Fine Art Printing**: Multi-row/multi-column grid layouts, Picture Package, Custom Package, bleed guides, cut marks, custom margin controls, 300 PPI export to PDF/JPEG, and direct macOS printer integration.
 * **SQLite Asset Catalog**: Fast, durable `.lrcat` catalog storing image metadata, development history, virtual copies, collections, star ratings, color labels, and pick flags.
+* **Real-Time Interactive Editing**: Zero-lag `1024px` Desktop active-edit drafting and Android single-worker conflated `540px` bilinear scrub preview with instant full-res commit on slider release.
+* **Built-In Auto-Update (In-Place Upgrade)**: Automatic GitHub Releases update checking and one-click in-place upgrades on both Desktop and Android without losing your `.lrcat` catalog, photos, or presets.
 * **Apple Silicon & Hardware Acceleration**: Integrated with Apple Neural Engine (ANE) and Metal for subject segmentation, facial feature detection, and depth map extraction, with automatic pure-Rust vector SIMD fallbacks on Windows and Linux.
 
 ---
@@ -65,12 +67,12 @@ Pre-built desktop installers and Android `.apk` builds are provided in [GitHub R
 | Platform | Installer / Package Type | File Name | Notes |
 | :--- | :--- | :--- | :--- |
 | **Android** | Android Package (`.apk`) | `LightRaw-Android-release.apk` / `LightRaw-Android-debug.apk` | Android 8.0+ (SDK 26+), Camera2 RAW + Offline Catalog |
-| **macOS** | Disk Image (`.dmg`) | `LightRaw-1.0.0-macOS.dmg` | Drag & Drop to `/Applications` |
-| **Windows** | Setup Executable (`.exe`) | `LightRaw-1.0.0-Windows-Setup.exe` | Inno Setup with file associations |
-| **Windows** | Windows Installer (`.msi`) | `LightRaw-1.0.0.msi` | Enterprise WiX package |
-| **Linux** | Debian Package (`.deb`) | `lightraw_1.0.0_amd64.deb` | Ubuntu, Debian, Linux Mint, Pop!_OS |
-| **Linux** | Universal AppImage | `LightRaw-1.0.0-x86_64.AppImage` | Portable binary for any Linux distro |
-| **Linux** | Compressed Tarball | `lightraw-1.0.0-linux-x86_64.tar.gz` | Standalone archive with desktop entry |
+| **macOS** | Disk Image (`.dmg`) | `LightRaw-1.2.0-macOS.dmg` | Drag & Drop to `/Applications` |
+| **Windows** | Setup Executable (`.exe`) | `LightRaw-1.2.0-Windows-Setup.exe` | Inno Setup with file associations |
+| **Windows** | Windows Installer (`.msi`) | `LightRaw-1.2.0.msi` | Enterprise WiX package |
+| **Linux** | Debian Package (`.deb`) | `lightraw_1.2.0_amd64.deb` | Ubuntu, Debian, Linux Mint, Pop!_OS |
+| **Linux** | Universal AppImage | `LightRaw-1.2.0-x86_64.AppImage` | Portable binary for any Linux distro |
+| **Linux** | Compressed Tarball | `lightraw-1.2.0-linux-x86_64.tar.gz` | Standalone archive with desktop entry |
 
 ---
 

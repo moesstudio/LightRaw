@@ -20,6 +20,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,6 +30,7 @@ import androidx.core.widget.ImageViewCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.moestret.lightraw.R
+import com.moestret.lightraw.data.AppUpdater
 import com.moestret.lightraw.data.CatalogDbHelper
 import com.moestret.lightraw.data.MediaStoreImporter
 import com.moestret.lightraw.databinding.ActivityMainBinding
@@ -69,6 +71,8 @@ class MainActivity : AppCompatActivity() {
     private var searchQuery = ""
 
     private val thumbCache = object : LruCache<String, Bitmap>(72) {}
+    private var pendingInstallApk: java.io.File? = null
+    private var updateCheckInFlight = false
 
     enum class NavSection { PHOTOS, ALBUMS, DEVICE }
 
@@ -124,10 +128,21 @@ class MainActivity : AppCompatActivity() {
         setupBottomNavigation()
         setupBottomActions()
         handleIncomingShareIntent(intent)
+
+        AppUpdater.cleanupUpdateCache(this)
+        if (AppUpdater.shouldAutoCheckNow(this)) {
+            checkAppUpdates(manual = false)
+        }
     }
 
     override fun onResume() {
         super.onResume()
+        pendingInstallApk?.let { apkFile ->
+            if (!AppUpdater.needsInstallPermissionPrompt(this) && apkFile.exists()) {
+                pendingInstallApk = null
+                AppUpdater.launchApkInstaller(this, apkFile)
+            }
+        }
         thumbCache.evictAll()
         if (navSection == NavSection.DEVICE) {
             loadDeviceGallery()
@@ -139,6 +154,10 @@ class MainActivity : AppCompatActivity() {
     private fun setupTopBar() {
         binding.rvPhotos.layoutManager = GridLayoutManager(this, spanCount)
         binding.rvPhotos.adapter = PhotoGridAdapter()
+
+        binding.btnCheckUpdate.setOnClickListener {
+            checkAppUpdates(manual = true)
+        }
 
         binding.btnSort.setOnClickListener {
             val labels = SortMode.entries.map {
@@ -741,6 +760,180 @@ class MainActivity : AppCompatActivity() {
                 notifyItemChanged(holder.bindingAdapterPosition)
                 true
             }
+        }
+    }
+
+    private fun checkAppUpdates(manual: Boolean) {
+        if (updateCheckInFlight) return
+        updateCheckInFlight = true
+        if (manual) {
+            Toast.makeText(this, "Checking for updates...", Toast.LENGTH_SHORT).show()
+        }
+        scope.launch {
+            val result = AppUpdater.fetchLatestRelease(this@MainActivity)
+            updateCheckInFlight = false
+            if (isFinishing || isDestroyed) return@launch
+
+            when (result) {
+                is AppUpdater.CheckResult.UpdateAvailable -> {
+                    ImageViewCompat.setImageTintList(
+                        binding.btnCheckUpdate,
+                        ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.lr_accent_light))
+                    )
+                    if (manual || !AppUpdater.isTagSkipped(this@MainActivity, result.release.tagName)) {
+                        showUpdateAvailableDialog(result.currentVersion, result.release)
+                    }
+                }
+                is AppUpdater.CheckResult.UpToDate -> {
+                    if (manual) {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("LightRaw Is Up To Date")
+                            .setMessage("Installed version: v${result.currentVersion}\nLatest GitHub release: ${result.latestTag}")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                }
+                is AppUpdater.CheckResult.Failed -> {
+                    if (manual) {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Update Check Failed")
+                            .setMessage("Could not reach GitHub Releases:\n${result.reason}")
+                            .setNegativeButton("Close", null)
+                            .setPositiveButton("Open Releases") { _, _ ->
+                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdater.GITHUB_RELEASES_PAGE)))
+                            }
+                            .show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showUpdateAvailableDialog(currentVer: String, release: AppUpdater.ReleaseInfo) {
+        val notes = release.releaseNotes.ifBlank { "Bug fixes, real-time performance & enhancements." }
+        val msg = "Installed: v$currentVer\nLatest: ${release.tagName}\n\n$notes"
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Update Available: ${release.title}")
+            .setMessage(msg)
+            .setNegativeButton("Skip Version") { _, _ ->
+                AppUpdater.skipTag(this, release.tagName)
+            }
+            .setNeutralButton("Later", null)
+
+        val asset = release.asset
+        if (asset != null) {
+            builder.setPositiveButton("Update Now") { _, _ ->
+                startApkDownloadAndInstall(asset)
+            }
+        } else {
+            builder.setPositiveButton("Download Page") { _, _ ->
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.htmlUrl)))
+            }
+        }
+        builder.show()
+    }
+
+    private fun startApkDownloadAndInstall(asset: AppUpdater.ReleaseAsset) {
+        val pad = DarkroomUiFactory.dp(this, 18)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+        val tvStatus = TextView(this).apply {
+            text = "Downloading ${asset.name}..."
+            textSize = 13f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.lr_text))
+        }
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = DarkroomUiFactory.dp(this@MainActivity, 12) }
+        }
+        container.addView(tvStatus)
+        container.addView(progressBar)
+
+        var downloadJob: Job? = null
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Downloading Update")
+            .setView(container)
+            .setCancelable(false)
+            .setNegativeButton("Cancel") { _, _ -> downloadJob?.cancel() }
+            .create()
+        dialog.show()
+
+        downloadJob = scope.launch {
+            val downloadRes = AppUpdater.downloadApk(this@MainActivity, asset) { downloaded, total ->
+                val mbDone = downloaded / (1024f * 1024f)
+                if (total > 0L) {
+                    val pct = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
+                    val mbTotal = total / (1024f * 1024f)
+                    progressBar.isIndeterminate = false
+                    progressBar.progress = pct
+                    tvStatus.text = "Downloading ${asset.name}: %.1f / %.1f MB (%d%%)".format(mbDone, mbTotal, pct)
+                } else {
+                    progressBar.isIndeterminate = true
+                    tvStatus.text = "Downloading ${asset.name}: %.1f MB".format(mbDone)
+                }
+            }
+            if (dialog.isShowing) dialog.dismiss()
+            if (isFinishing || isDestroyed) return@launch
+
+            downloadRes.onSuccess { apkFile ->
+                proceedWithDownloadedApk(apkFile)
+            }.onFailure { err ->
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Download Failed")
+                    .setMessage(err.message ?: "Failed to download update package.")
+                    .setNegativeButton("Close", null)
+                    .setPositiveButton("Open GitHub") { _, _ ->
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdater.GITHUB_RELEASES_PAGE)))
+                    }
+                    .show()
+            }
+        }
+    }
+
+    private fun proceedWithDownloadedApk(apkFile: java.io.File) {
+        val sigMatch = AppUpdater.checkSignatureMatchesInstalled(this, apkFile)
+        if (sigMatch == false) {
+            AlertDialog.Builder(this)
+                .setTitle("Signing Key Notice")
+                .setMessage(
+                    "The downloaded APK uses a different signing key than the currently installed build " +
+                        "(common when switching from a local USB/Android Studio debug build to a GitHub Release build).\n\n" +
+                        "Android only allows in-place updates without uninstalling when both APKs share the same signing key."
+                )
+                .setNegativeButton("Cancel", null)
+                .setNeutralButton("Open Releases") { _, _ ->
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdater.GITHUB_RELEASES_PAGE)))
+                }
+                .setPositiveButton("Try Installer Anyway") { _, _ ->
+                    requestPermissionOrInstall(apkFile)
+                }
+                .show()
+            return
+        }
+        requestPermissionOrInstall(apkFile)
+    }
+
+    private fun requestPermissionOrInstall(apkFile: java.io.File) {
+        if (AppUpdater.needsInstallPermissionPrompt(this)) {
+            pendingInstallApk = apkFile
+            AlertDialog.Builder(this)
+                .setTitle("Allow App Installs")
+                .setMessage(
+                    "Grant LightRaw permission to install updates so this version upgrades directly in place without uninstalling your catalog or photos."
+                )
+                .setNegativeButton("Cancel") { _, _ -> pendingInstallApk = null }
+                .setPositiveButton("Open Settings") { _, _ ->
+                    AppUpdater.launchInstallPermissionSettings(this)
+                }
+                .show()
+        } else {
+            AppUpdater.launchApkInstaller(this, apkFile)
         }
     }
 }

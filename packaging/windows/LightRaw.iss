@@ -1,8 +1,10 @@
-; Inno Setup Script for LightRaw 1.0.0
-; Builds LightRaw-1.0.0-Setup.exe for Windows 10 & 11 (64-bit)
+; Inno Setup Script for LightRaw
+; Override version from CLI via /DMyAppVersion=X.Y.Z
 
 #define MyAppName "LightRaw"
-#define MyAppVersion "1.0.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.2.0"
+#endif
 #define MyAppPublisher "Moestret"
 #define MyAppURL "https://github.com/moesstudio/LightRaw"
 #define MyAppExeName "lightraw.exe"

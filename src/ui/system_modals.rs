@@ -4,10 +4,12 @@
 
 use super::{CanvasSurroundMode, Colors, LightRawApp};
 use crate::catalog::{CollectionItem, SnapshotItem};
+use crate::updater::{UpdaterUiState, CURRENT_VERSION, GITHUB_RELEASES_PAGE};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 pub fn render_system_modals(app: &mut LightRawApp, ctx: &egui::Context) {
     render_about_and_sysinfo(app, ctx);
+    render_update_modal(app, ctx);
     render_rename_catalog(app, ctx);
     render_preferences_modal(app, ctx);
     render_shortcuts_modal(app, ctx);
@@ -99,7 +101,7 @@ fn render_about_and_sysinfo(app: &mut LightRawApp, ctx: &egui::Context) {
                                         );
                                     });
                                 ui.label(
-                                    RichText::new("1.0.0")
+                                    RichText::new(CURRENT_VERSION)
                                         .size(15.0)
                                         .color(Color32::from_rgb(170, 175, 185)),
                                 );
@@ -172,7 +174,7 @@ fn render_about_and_sysinfo(app: &mut LightRawApp, ctx: &egui::Context) {
                 "Active".into()
             };
             let diag_text = format!(
-                "LightRaw Classic 1.0.0 [Build 20261108.Release-Metal]\n\
+                "LightRaw Classic {} [Build Release]\n\
                  Target Architecture: {} ({})\n\
                  Graphics / Acceleration: Apple Metal 3 / Glow / Accelerate Framework\n\
                  Display Scale: {:.1}x (Retina Native)\n\
@@ -183,6 +185,7 @@ fn render_about_and_sysinfo(app: &mut LightRawApp, ctx: &egui::Context) {
                  Storage Free Space: {:.1} GB free of {:.1} GB on {}\n\
                  Color Engine: 32-Bit Linear ProPhoto RGB / Bradford LMS\n\
                  License: Moestret (Standalone Lifetime Professional)",
+                crate::updater::CURRENT_VERSION,
                 std::env::consts::ARCH,
                 std::env::consts::OS,
                 ctx.pixels_per_point(),
@@ -479,6 +482,17 @@ fn render_about_and_sysinfo(app: &mut LightRawApp, ctx: &egui::Context) {
                         ctx.copy_text(diag_text);
                         app.status_message = "System diagnostics copied to clipboard.".into();
                     }
+
+                    let upd_btn = egui::Button::new(
+                        RichText::new("🔄 Check Updates").color(Color32::WHITE),
+                    )
+                    .fill(Color32::from_rgb(44, 46, 54))
+                    .rounding(egui::Rounding::same(5.0))
+                    .min_size(Vec2::new(124.0, 24.0));
+
+                    if ui.add(upd_btn).clicked() {
+                        app.trigger_update_check(true);
+                    }
                 });
             });
         });
@@ -486,6 +500,144 @@ fn render_about_and_sysinfo(app: &mut LightRawApp, ctx: &egui::Context) {
     if !open {
         app.show_about_modal = false;
         app.show_system_info_modal = false;
+    }
+}
+
+fn render_update_modal(app: &mut LightRawApp, ctx: &egui::Context) {
+    if !app.show_update_modal {
+        return;
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.show_update_modal = false;
+    }
+
+    let mut open = true;
+    let mut trigger_recheck = false;
+    let mut trigger_install: Option<crate::updater::RemoteRelease> = None;
+
+    egui::Window::new("LightRaw Software Update")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size(Vec2::new(470.0, 290.0))
+        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.label(
+                RichText::new(format!("Installed Version: v{}", CURRENT_VERSION))
+                    .size(12.5)
+                    .color(Colors::TEXT_MID),
+            );
+            ui.add_space(10.0);
+
+            match &app.update_state {
+                UpdaterUiState::Idle | UpdaterUiState::Checking => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Checking GitHub Releases for latest version...").color(Colors::TEXT_BRIGHT));
+                    });
+                }
+                UpdaterUiState::UpToDate { current, latest_tag } => {
+                    ui.label(
+                        RichText::new(format!("You are up to date! (v{} / latest {})", current, latest_tag))
+                            .strong()
+                            .color(Color32::from_rgb(80, 210, 120)),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("Your catalog, presets, and edited photos remain intact across every update.")
+                            .size(11.5)
+                            .color(Colors::TEXT_MID),
+                    );
+                }
+                UpdaterUiState::Available(rel) => {
+                    ui.label(
+                        RichText::new(format!("New Version Available: {}", rel.title))
+                            .size(14.5)
+                            .strong()
+                            .color(Color32::from_rgb(100, 180, 255)),
+                    );
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().max_height(135.0).show(ui, |ui| {
+                        let notes = if rel.notes.is_empty() {
+                            "Performance fixes, pipeline enhancements, and stability improvements."
+                        } else {
+                            &rel.notes
+                        };
+                        ui.label(RichText::new(notes).size(11.5).color(Colors::TEXT_MAIN));
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if let Some(ref asset) = rel.asset {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(format!("Update & Restart ({})", asset.name))
+                                            .strong()
+                                            .color(Color32::WHITE),
+                                    )
+                                    .fill(Colors::ACCENT_BLUE),
+                                )
+                                .clicked()
+                            {
+                                trigger_install = Some(rel.clone());
+                            }
+                        }
+                        if ui.button("Open Release Page").clicked() {
+                            let _ = open::that(&rel.html_url);
+                        }
+                    });
+                }
+                UpdaterUiState::Installing(msg) => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new(msg).color(Colors::TEXT_BRIGHT));
+                    });
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("Do not close LightRaw; catalog settings and database will be preserved.")
+                            .size(11.0)
+                            .color(Colors::TEXT_MID),
+                    );
+                }
+                UpdaterUiState::Notice(msg) => {
+                    ui.label(RichText::new(msg).size(12.0).color(Colors::TEXT_BRIGHT));
+                }
+                UpdaterUiState::Error(err) => {
+                    ui.label(
+                        RichText::new(format!("Update check failed: {}", err))
+                            .size(12.0)
+                            .color(Color32::from_rgb(240, 110, 110)),
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Open GitHub Releases").clicked() {
+                        let _ = open::that(GITHUB_RELEASES_PAGE);
+                    }
+                }
+            }
+
+            ui.add_space(14.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Check Again").clicked() {
+                    trigger_recheck = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        app.show_update_modal = false;
+                    }
+                });
+            });
+        });
+
+    if !open {
+        app.show_update_modal = false;
+    }
+    if trigger_recheck {
+        app.trigger_update_check(true);
+    }
+    if let Some(rel) = trigger_install {
+        app.flush_dirty_photos();
+        app.start_update_install(rel);
     }
 }
 

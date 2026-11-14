@@ -1,6 +1,7 @@
 package com.moestret.lightraw.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -177,5 +178,27 @@ class PipelineAndXmpTest {
         val fitBox = com.moestret.lightraw.engine.WatermarkRenderer.computeGraphicBox(1000, 800, 500, 250, wmFit)
         assertEquals(950f, fitBox[2], 0.5f)
         assertEquals(475f, fitBox[3], 0.5f)
+    }
+
+    @Test
+    fun appUpdaterSemverAndAssetSelectionWork() {
+        assertTrue(com.moestret.lightraw.data.AppUpdater.isNewerVersion("v1.2.1", "1.2.0"))
+        assertTrue(com.moestret.lightraw.data.AppUpdater.isNewerVersion("v1.10.0", "1.2.0"))
+        assertFalse(com.moestret.lightraw.data.AppUpdater.isNewerVersion("v1.2.0", "1.2.0"))
+        assertFalse(com.moestret.lightraw.data.AppUpdater.isNewerVersion("1.1.0", "1.2.0"))
+
+        val assets = listOf(
+            "LightRaw-1.2.0-macOS.dmg",
+            "LightRaw-Android-release.apk",
+            "LightRaw-Android-debug.apk"
+        )
+        assertEquals(
+            "LightRaw-Android-release.apk",
+            com.moestret.lightraw.data.AppUpdater.selectApkAssetName(assets, isDebugPackage = false)
+        )
+        assertEquals(
+            "LightRaw-Android-debug.apk",
+            com.moestret.lightraw.data.AppUpdater.selectApkAssetName(assets, isDebugPackage = true)
+        )
     }
 }

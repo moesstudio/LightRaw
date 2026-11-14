@@ -51,6 +51,15 @@
         </LinearLayout>
 
         <ImageButton
+            android:id="@+id/btnCheckUpdate"
+            android:layout_width="40dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Check App Updates"
+            android:src="@drawable/ic_lr_update"
+            app:tint="@color/lr_text_secondary" />
+
+        <ImageButton
             android:id="@+id/btnSort"
             android:layout_width="42dp"
             android:layout_height="48dp"

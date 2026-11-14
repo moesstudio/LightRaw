@@ -30,6 +30,10 @@ use crate::presets::{
     export_preset_to_xmp, interpolate_preset_amount, load_presets_from_folder, parse_xmp_preset,
     CopySettingsMask, DevelopPreset, LocalMaskPreset,
 };
+use crate::updater::{
+    check_latest_release, download_and_install_release, ApplyUpdateOutcome, RemoteRelease,
+    UpdateCheckOutcome, UpdaterUiState, CURRENT_VERSION,
+};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, Ui, Vec2};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -683,6 +687,12 @@ pub struct LightRawApp {
     pub last_history_step_meta: Option<(i64, String, Instant)>,
     pub last_frame_instant: Instant,
     pub rolling_frame_time_ms: f32,
+
+    // In-App Auto-Updater State
+    pub show_update_modal: bool,
+    pub auto_update_checked_startup: bool,
+    pub update_state: UpdaterUiState,
+    pub update_rx: Option<std::sync::mpsc::Receiver<UpdaterUiState>>,
 }
 
 fn merge_and_dedup_presets(
@@ -1157,6 +1167,10 @@ impl LightRawApp {
             last_history_step_meta: None,
             last_frame_instant: Instant::now(),
             rolling_frame_time_ms: 1.0,
+            show_update_modal: false,
+            auto_update_checked_startup: false,
+            update_state: UpdaterUiState::Idle,
+            update_rx: None,
         }
     }
 
@@ -1904,7 +1918,14 @@ impl LightRawApp {
         let is_pointer_down = ctx.input(|i| i.pointer.primary_down());
         let is_active_dev = photo_id == self.active_photo_id && self.active_module == WorkspaceModule::Develop;
         let is_canvas_interaction = self.zoom_drag_start.is_some() || self.loupe_zoom > 1.02;
-        let use_draft = is_active_dev && is_pointer_down && ctx.input(|i| i.pointer.is_decidedly_dragging()) && !is_canvas_interaction;
+        let is_active_edit = self
+            .last_edit_instant
+            .map(|t| t.elapsed() < Duration::from_millis(220))
+            .unwrap_or(false);
+        let use_draft = is_active_dev
+            && is_pointer_down
+            && self.zoom_drag_start.is_none()
+            && (is_active_edit || (ctx.input(|i| i.pointer.is_decidedly_dragging()) && !is_canvas_interaction));
 
         let mut opts = if photo_id == self.active_photo_id {
             self.build_active_render_options(apply_crop)
@@ -2196,6 +2217,79 @@ impl LightRawApp {
             }
         }
         self.last_edit_instant = None;
+    }
+
+    pub fn trigger_update_check(&mut self, open_modal: bool) {
+        if open_modal {
+            self.show_update_modal = true;
+        }
+        if matches!(
+            self.update_state,
+            UpdaterUiState::Checking | UpdaterUiState::Installing(_)
+        ) {
+            return;
+        }
+        self.update_state = UpdaterUiState::Checking;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        std::thread::spawn(move || {
+            let next = match check_latest_release() {
+                Ok(UpdateCheckOutcome::Available(rel)) => UpdaterUiState::Available(rel),
+                Ok(UpdateCheckOutcome::UpToDate { current, latest_tag }) => {
+                    UpdaterUiState::UpToDate { current, latest_tag }
+                }
+                Err(err) => UpdaterUiState::Error(err),
+            };
+            let _ = tx.send(next);
+        });
+    }
+
+    pub fn start_update_install(&mut self, release: RemoteRelease) {
+        if matches!(self.update_state, UpdaterUiState::Installing(_)) {
+            return;
+        }
+        self.show_update_modal = true;
+        self.update_state =
+            UpdaterUiState::Installing(format!("Downloading LightRaw {}...", release.tag_name));
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        std::thread::spawn(move || {
+            let next = match download_and_install_release(&release) {
+                Ok(ApplyUpdateOutcome::Relaunching(msg)) => {
+                    let _ = tx.send(UpdaterUiState::Installing(msg));
+                    std::thread::sleep(Duration::from_millis(600));
+                    std::process::exit(0);
+                }
+                Ok(ApplyUpdateOutcome::ManualStep(msg)) => UpdaterUiState::Notice(msg),
+                Err(err) => UpdaterUiState::Error(err),
+            };
+            let _ = tx.send(next);
+        });
+    }
+
+    pub fn poll_updater(&mut self, ctx: &egui::Context) {
+        if !self.auto_update_checked_startup {
+            self.auto_update_checked_startup = true;
+            self.trigger_update_check(false);
+        }
+        if let Some(ref rx) = self.update_rx {
+            match rx.try_recv() {
+                Ok(next) => {
+                    if let UpdaterUiState::Available(ref rel) = next {
+                        self.status_message = format!("Update available: LightRaw {}", rel.tag_name);
+                    }
+                    self.update_state = next;
+                    self.update_rx = None;
+                    ctx.request_repaint();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.update_rx = None;
+                }
+            }
+        }
     }
 
     pub fn undo_active_photo(&mut self) {
@@ -3712,7 +3806,10 @@ impl LightRawApp {
                     // Left Identity Plate (App icon badge + subtitle + owner — click for About)
                     let (badge_rect, badge_resp) =
                         ui.allocate_exact_size(Vec2::new(26.0, 26.0), Sense::click());
-                    let badge_resp = badge_resp.on_hover_text("LightRaw Classic 1.0.0 — Click for About & System Info");
+                    let badge_resp = badge_resp.on_hover_text(format!(
+                        "LightRaw Classic {} — Click for About & System Info",
+                        CURRENT_VERSION
+                    ));
                     if badge_resp.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
@@ -3797,6 +3894,21 @@ impl LightRawApp {
                             .color(perf_col),
                     )
                     .on_hover_text("Real-time Develop & UI Frame Render Latency");
+
+                    if let UpdaterUiState::Available(ref rel) = self.update_state {
+                        ui.add_space(10.0);
+                        let upd_btn = egui::Button::new(
+                            RichText::new(format!("⬆ Update {}", rel.tag_name))
+                                .size(10.5)
+                                .strong()
+                                .color(Color32::WHITE),
+                        )
+                        .fill(Color32::from_rgb(37, 99, 235))
+                        .rounding(egui::Rounding::same(10.0));
+                        if ui.add(upd_btn).clicked() {
+                            self.show_update_modal = true;
+                        }
+                    }
 
                     // Right-aligned Lightroom Classic Module Picker: Library | Develop | Map | Book | Slideshow | Print | Web
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4093,7 +4205,8 @@ impl eframe::App for LightRawApp {
         }
         self.was_pointer_down = is_pointer_down;
 
-        // 1. Register wakeup handle & sync text-focus state with native macOS menu bar
+        // 1. Poll background auto-updater & register wakeup handle
+        self.poll_updater(ctx);
         menu_dispatch::register_egui_context_for_menu(ctx);
         #[cfg(target_os = "macos")]
         unsafe {
@@ -4161,8 +4274,9 @@ impl eframe::App for LightRawApp {
         // 6. Guarded Window Title update — ONLY send ViewportCommand::Title when changed!
         // (Fixes the 94% idle CPU bug on macOS winit!)
         let new_title = format!(
-            "{} - LightRaw 1.0.0 - {} - {}",
+            "{} - LightRaw {} - {} - {}",
             self.catalog_display_name,
+            CURRENT_VERSION,
             self.active_module.label(),
             self.identity_plate_owner
         );

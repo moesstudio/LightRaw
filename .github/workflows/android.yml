@@ -81,6 +81,39 @@ jobs:
             --manifest-path rust/lightraw_jni/Cargo.toml \
             build --release
 
+      - name: Restore cached Android debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: lightraw-android-debug-keystore-v1
+
+      - name: Configure Android signing & version
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            echo "LIGHTRAW_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "LIGHTRAW_VERSION_NAME=1.2.0" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "${GITHUB_WORKSPACE}/android/lightraw-release.jks"
+            echo "LIGHTRAW_KEYSTORE_PATH=${GITHUB_WORKSPACE}/android/lightraw-release.jks" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_KEYSTORE_PASSWORD=${KEYSTORE_PASS}" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_KEY_ALIAS=${KEY_ALIAS}" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_KEY_PASSWORD=${KEY_PASS}" >> "$GITHUB_ENV"
+            echo "Configured persistent release keystore from GitHub Secrets."
+          else
+            if [ ! -f "$HOME/.android/debug.keystore" ]; then
+              mkdir -p "$HOME/.android"
+              keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            echo "Using persistent cached Android debug keystore."
+          fi
+
       - name: Run Android lint, unit tests and build APKs
         working-directory: android
         run: |

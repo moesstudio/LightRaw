@@ -47,6 +47,7 @@ android/.cxx/
 android/**/build/
 android/captures/
 android/local.properties
+android/keystore.properties
 android/app/src/main/jniLibs/
 *.apk
 *.aab

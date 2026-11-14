@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build macOS DMG Installer for LightRaw 1.0.0
+# Build macOS DMG Installer for LightRaw
+VERSION="${LIGHTRAW_VERSION:-1.2.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 STAGING_DIR="${DIST_DIR}/dmg_staging"
 APP_BUNDLE="${ROOT_DIR}/LightRaw.app"
-DMG_OUTPUT="${DIST_DIR}/LightRaw-1.0.0-macOS.dmg"
+DMG_OUTPUT="${DIST_DIR}/LightRaw-${VERSION}-macOS.dmg"
 
-echo "==> Building macOS .dmg installer for LightRaw 1.0.0..."
+echo "==> Building macOS .dmg installer for LightRaw ${VERSION}..."
 mkdir -p "${DIST_DIR}"
 rm -rf "${STAGING_DIR}" "${DMG_OUTPUT}"
 mkdir -p "${STAGING_DIR}"
@@ -24,7 +25,7 @@ ln -s /Applications "${STAGING_DIR}/Applications"
 
 echo "--> Creating compressed UDZO disk image..."
 hdiutil create \
-    -volname "LightRaw 1.0.0" \
+    -volname "LightRaw ${VERSION}" \
     -srcfolder "${STAGING_DIR}" \
     -ov \
     -format UDZO \

@@ -22,7 +22,7 @@ pub extern "system" fn Java_com_moestret_lightraw_engine_NativeBridge_nativeVers
     env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    new_jstring(&mut { env }, "LightRaw Rust Core 1.1.0 (PV2012)")
+    new_jstring(&mut { env }, "LightRaw Rust Core 1.2.0 (PV2012)")
 }
 
 /// Processes RGBA8 input using LightRaw's full non-destructive PV2012 Rust pipeline.

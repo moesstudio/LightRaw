@@ -137,6 +137,7 @@ enum LightRawMenuAction {
     ACTION_WHATS_NEW = 160,
     ACTION_HELP_DOCUMENTATION = 161,
     ACTION_SHORTCUTS = 162,
+    ACTION_CHECK_UPDATES = 163,
 
     // 10. Newly Wired Complete Menu Actions (Zero Dead Items)
     ACTION_OPEN_RECENT = 170,
@@ -538,6 +539,7 @@ void setup_macos_native_menu(void) {
         [mainMenu addItem:helpTopItem];
         NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Help"];
         add_action_item(helpMenu, @"What's New...", @"", 0, ACTION_WHATS_NEW);
+        add_action_item(helpMenu, @"Check for Updates...", @"", 0, ACTION_CHECK_UPDATES);
         add_action_item(helpMenu, @"LightRaw Help...", @"?", NSEventModifierFlagCommand | NSEventModifierFlagShift, ACTION_HELP_DOCUMENTATION);
         add_action_item(helpMenu, @"System Info...", @"", 0, ACTION_SYSTEM_INFO);
         add_action_item(helpMenu, @"Develop Module Shortcuts...", @"/", NSEventModifierFlagCommand, ACTION_SHORTCUTS);

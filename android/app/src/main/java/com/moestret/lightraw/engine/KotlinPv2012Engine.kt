@@ -215,11 +215,11 @@ object KotlinPv2012Engine {
         val blkShift = params.blacks / 100f
         val dehazeAmt = params.dehaze / 100f
         val clarityAmt = (params.clarity * 0.65f + params.texture * 0.45f) / 100f
-        val needSpatial = abs(clarityAmt) > 0.01f || params.sharpness > 0.5f ||
-            params.luminanceNr > 1f || params.lensBlurAmount > 1f || params.retouchSpots.isNotEmpty()
+        val needSpatial = !draftInteractive && (abs(clarityAmt) > 0.01f || params.sharpness > 0.5f ||
+            params.luminanceNr > 1f || params.lensBlurAmount > 1f || params.retouchSpots.isNotEmpty())
 
         // Optional Retouch / Spot Heal pass on pixels before tonal mapping
-        if (params.retouchSpots.isNotEmpty()) {
+        if (!draftInteractive && params.retouchSpots.isNotEmpty()) {
             applyRetouchSpots(srcPixels, w, h, params)
         }
 
@@ -256,7 +256,7 @@ object KotlinPv2012Engine {
         val vigFeather = (params.vignetteFeather / 100f).coerceIn(0.08f, 1f)
         val sharpAmt = (params.sharpness / 150f) * 0.95f
         val nrAmt = (params.luminanceNr / 100f) * 0.55f
-        val grainStrength = (params.grainAmount / 100f) * 0.08f
+        val grainStrength = if (draftInteractive) 0f else (params.grainAmount / 100f) * 0.08f
         val lensBlur = (params.lensBlurAmount / 100f).coerceIn(0f, 1f)
         val blurCenterY = (params.lensBlurFocalCenter / 100f).coerceIn(0.05f, 0.95f)
 
@@ -603,7 +603,7 @@ object KotlinPv2012Engine {
         val cB = if (applyCrop) params.cropBottom.coerceIn(cT + 0.08f, 1f) else 1f
         val isCropped = applyCrop && (cL > 0.002f || cT > 0.002f || cR < 0.998f || cB < 0.998f)
 
-        val maxPreviewDim = if (draftInteractive) 1280 else Int.MAX_VALUE
+        val maxPreviewDim = if (draftInteractive) 540 else Int.MAX_VALUE
         val srcW = source.width
         val srcH = source.height
         val scaleDown = if (max(srcW, srcH) > maxPreviewDim) {
