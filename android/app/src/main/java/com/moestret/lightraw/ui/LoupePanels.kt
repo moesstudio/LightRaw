@@ -71,6 +71,8 @@ object LoupePanels {
         val deletePreset: (String) -> Unit,
         val setActiveMaskId: (String?) -> Unit,
         val getActiveMaskId: () -> String?,
+        val getReferenceThumb: () -> Bitmap? = { null },
+        val triggerRematchRawFlat: (Boolean) -> Unit = {},
         val rebuildPanel: () -> Unit
     )
 
@@ -166,8 +168,101 @@ object LoupePanels {
         row.addView(btnMatch)
         host.container.addView(row)
 
-        DarkroomUiFactory.addSectionHeader(host.container, "CAMERA PROFILE & TREATMENT")
         val cur = host.getParams()
+        if (cur.hasColorMatchLut()) {
+            DarkroomUiFactory.addSectionHeader(host.container, "MATCHED LOOK · ${cur.matchRefName.ifBlank { "Reference" }}")
+            val refThumb = host.getReferenceThumb()
+            val card = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(
+                    DarkroomUiFactory.dp(ctx, 10),
+                    DarkroomUiFactory.dp(ctx, 8),
+                    DarkroomUiFactory.dp(ctx, 10),
+                    DarkroomUiFactory.dp(ctx, 8)
+                )
+                background = GradientDrawable().apply {
+                    cornerRadius = DarkroomUiFactory.dp(ctx, 8).toFloat()
+                    setColor(0xFF1F2127.toInt())
+                    setStroke(DarkroomUiFactory.dp(ctx, 1), 0xFF333640.toInt())
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = DarkroomUiFactory.dp(ctx, 6) }
+            }
+
+            if (refThumb != null && !refThumb.isRecycled) {
+                val thumbView = ImageView(ctx).apply {
+                    setImageBitmap(refThumb)
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        DarkroomUiFactory.dp(ctx, 74)
+                    ).apply { bottomMargin = DarkroomUiFactory.dp(ctx, 6) }
+                }
+                card.addView(thumbView)
+            }
+
+            if (cur.matchPalette.isNotEmpty()) {
+                val palRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        DarkroomUiFactory.dp(ctx, 14)
+                    ).apply { bottomMargin = DarkroomUiFactory.dp(ctx, 6) }
+                }
+                for ((idx, argb) in cur.matchPalette.withIndex()) {
+                    val sw = View(ctx).apply {
+                        setBackgroundColor(argb)
+                        layoutParams = LinearLayout.LayoutParams(
+                            0,
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            1f
+                        ).apply {
+                            if (idx > 0) marginStart = DarkroomUiFactory.dp(ctx, 2)
+                        }
+                    }
+                    palRow.addView(sw)
+                }
+                card.addView(palRow)
+            }
+
+            DarkroomUiFactory.addChipBar(
+                card,
+                listOf("Normal" to !cur.matchRawFlat, "Raw / Flat" to cur.matchRawFlat)
+            ) { idx ->
+                val wantFlat = idx == 1
+                if (wantFlat != cur.matchRawFlat) {
+                    host.triggerRematchRawFlat(wantFlat)
+                }
+            }
+
+            DarkroomUiFactory.addSliderRow(card, "Tonal", 0f, 100f, 100f, cur.matchToneAmount, 0, "%") { v, c ->
+                host.updateParams(host.getParams().copy(matchToneAmount = v), c, if (c) "Match Tonal" else null)
+            }
+            DarkroomUiFactory.addSliderRow(card, "Warna", 0f, 100f, 100f, cur.matchColorAmount, 0, "%") { v, c ->
+                host.updateParams(host.getParams().copy(matchColorAmount = v), c, if (c) "Match Warna" else null)
+            }
+
+            val actRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = DarkroomUiFactory.dp(ctx, 4) }
+            }
+            actRow.addView(pillBtn(ctx, "Change Ref", heightDp = 36, textSp = 11.5f, weight = 1f) {
+                host.triggerMatchRef()
+            })
+            actRow.addView(pillBtn(ctx, "Clear Match", heightDp = 36, textSp = 11.5f, weight = 1f, marginStartDp = 8) {
+                host.updateParams(host.getParams().clearColorMatch(), true, "Clear Color Match")
+                host.rebuildPanel()
+            })
+            card.addView(actRow)
+            host.container.addView(card)
+        }
+
+        DarkroomUiFactory.addSectionHeader(host.container, "CAMERA PROFILE & TREATMENT")
         DarkroomUiFactory.addChipBar(
             host.container,
             CameraProfile.entries.map { it.label to (it == cur.cameraProfile) }

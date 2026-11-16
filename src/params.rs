@@ -886,6 +886,22 @@ pub struct DevelopParams {
 
     // --- Local Masking (`kMaskGroupBasedCorrectionsKey`) ---
     pub mask_groups: Vec<MaskGroup>,
+
+    // --- Reference Color & Tone Match (`ProLuth`-style 3D OKLab Look) ---
+    #[serde(default)]
+    pub match_lut_dim: u8,
+    #[serde(default)]
+    pub match_lut_data: Vec<f32>,
+    #[serde(default = "default_hundred")]
+    pub match_tone_amount: f32, // 0..100
+    #[serde(default = "default_hundred")]
+    pub match_color_amount: f32, // 0..100
+    #[serde(default)]
+    pub match_raw_flat: bool,
+    #[serde(default)]
+    pub match_palette: Vec<[u8; 3]>,
+    #[serde(default)]
+    pub match_ref_name: String,
 }
 
 impl Default for DevelopParams {
@@ -1080,6 +1096,14 @@ impl Default for DevelopParams {
 
             red_eye_spots: Vec::new(),
             mask_groups: Vec::new(),
+
+            match_lut_dim: 0,
+            match_lut_data: Vec::new(),
+            match_tone_amount: 100.0,
+            match_color_amount: 100.0,
+            match_raw_flat: false,
+            match_palette: Vec::new(),
+            match_ref_name: String::new(),
         }
     }
 }
@@ -1153,6 +1177,21 @@ impl DevelopParams {
             })
     }
 
+    pub fn has_color_match_lut(&self) -> bool {
+        let d = self.match_lut_dim as usize;
+        d >= 2 && self.match_lut_data.len() == d * d * d * 3
+    }
+
+    pub fn clear_color_match_lut(&mut self) {
+        self.match_lut_dim = 0;
+        self.match_lut_data.clear();
+        self.match_tone_amount = 100.0;
+        self.match_color_amount = 100.0;
+        self.match_raw_flat = false;
+        self.match_palette.clear();
+        self.match_ref_name.clear();
+    }
+
     pub fn is_grading_modified(&self) -> bool {
         self.split_toning_shadow_saturation > 0.05
             || self.color_grade_midtone_sat > 0.05
@@ -1162,6 +1201,7 @@ impl DevelopParams {
             || self.color_grade_midtone_lum.abs() > 0.05
             || self.color_grade_highlight_lum.abs() > 0.05
             || self.color_grade_global_lum.abs() > 0.05
+            || self.has_color_match_lut()
     }
 
     pub fn is_detail_modified(&self) -> bool {

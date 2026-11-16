@@ -1922,6 +1922,25 @@ pub fn render_develop_pipeline(
                 );
             }
 
+            // --- 11.5 Reference Color & Tone Match 3D LUT (`Tonal %` + `Warna %` in OKLab) ---
+            if !is_bw
+                && params.has_color_match_lut()
+                && (params.match_tone_amount > 0.1 || params.match_color_amount > 0.1)
+            {
+                let (mr, mg, mb) = crate::ai::color_match::apply_color_match_lut(
+                    pr,
+                    pg,
+                    pb,
+                    &params.match_lut_data,
+                    params.match_lut_dim as usize,
+                    params.match_tone_amount,
+                    params.match_color_amount,
+                );
+                pr = mr;
+                pg = mg;
+                pb = mb;
+            }
+
             // --- 12. Local Masking (`kMaskGroupBasedCorrectionsKey`) ---
             let mut active_mask_w = 0.0f32;
             if params.enable_mask_group_based_corrections && !params.mask_groups.is_empty() {

@@ -259,6 +259,8 @@ object KotlinPv2012Engine {
         val grainStrength = if (draftInteractive) 0f else (params.grainAmount / 100f) * 0.08f
         val lensBlur = (params.lensBlurAmount / 100f).coerceIn(0f, 1f)
         val blurCenterY = (params.lensBlurFocalCenter / 100f).coerceIn(0.05f, 0.95f)
+        val hasMatchLut = params.hasColorMatchLut() &&
+            (params.matchToneAmount > 0.1f || params.matchColorAmount > 0.1f)
 
         val sliceCount = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
         val rowsPerSlice = (h + sliceCount - 1) / sliceCount
@@ -273,6 +275,11 @@ object KotlinPv2012Engine {
                 val hg = IntArray(256)
                 val hb = IntArray(256)
                 val hl = IntArray(256)
+                val lutTmp = FloatArray(3)
+                val labInTmp = FloatArray(3)
+                val labLutTmp = FloatArray(3)
+                val linTmp = FloatArray(3)
+                val rgbOutTmp = FloatArray(3)
                 val invW = 1f / max(1, w - 1)
                 val invH = 1f / max(1, h - 1)
 
@@ -510,6 +517,26 @@ object KotlinPv2012Engine {
                             params.cgHighLum * hiMask +
                             params.cgGlobalLum) * 0.0018f
                         r += gradeLumAdd; g += gradeLumAdd; b += gradeLumAdd
+
+                        // Reference Color & Tone Match 3D LUT (`Tonal %` + `Warna %` in OKLab)
+                        if (!params.convertToGrayscale &&
+                            params.cameraProfile != CameraProfile.MONOCHROME &&
+                            hasMatchLut
+                        ) {
+                            AiColorMatchEngine.applyColorMatchLut(
+                                r, g, b,
+                                params.matchLutData,
+                                params.matchLutDim,
+                                params.matchToneAmount,
+                                params.matchColorAmount,
+                                lutTmp,
+                                labInTmp,
+                                labLutTmp,
+                                linTmp,
+                                rgbOutTmp
+                            )
+                            r = rgbOutTmp[0]; g = rgbOutTmp[1]; b = rgbOutTmp[2]
+                        }
 
                         // Post-Crop + Lens Vignette
                         if (abs(totalVig) > 0.01f) {

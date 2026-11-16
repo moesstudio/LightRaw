@@ -551,6 +551,13 @@ pub fn apply_settings_with_mask(
         dest.color_grade_enable_midtones = src.color_grade_enable_midtones;
         dest.color_grade_enable_highlights = src.color_grade_enable_highlights;
         dest.color_grade_enable_global = src.color_grade_enable_global;
+        dest.match_lut_dim = src.match_lut_dim;
+        dest.match_lut_data = src.match_lut_data.clone();
+        dest.match_tone_amount = src.match_tone_amount;
+        dest.match_color_amount = src.match_color_amount;
+        dest.match_raw_flat = src.match_raw_flat;
+        dest.match_palette = src.match_palette.clone();
+        dest.match_ref_name = src.match_ref_name.clone();
     }
     if mask.detail_sharpening || mask.detail_luminance_nr || mask.detail_color_nr || mask.detail_denoise_raw {
         dest.enable_detail = src.enable_detail;
@@ -810,6 +817,13 @@ pub fn interpolate_preset_amount(
 
     for mg in &mut out.mask_groups {
         mg.local.amount = (mg.local.amount * t).clamp(0.0, 200.0);
+    }
+
+    if out.has_color_match_lut() {
+        let base_tone = if base.has_color_match_lut() { base.match_tone_amount } else { 0.0 };
+        let base_col = if base.has_color_match_lut() { base.match_color_amount } else { 0.0 };
+        out.match_tone_amount = lerp(base_tone, target.match_tone_amount).clamp(0.0, 100.0);
+        out.match_color_amount = lerp(base_col, target.match_color_amount).clamp(0.0, 100.0);
     }
 
     out

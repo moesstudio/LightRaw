@@ -1,10 +1,13 @@
 // ============================================================================
 // LightRaw AI — Intelligent Reference Photo Color, White Balance & Tone Transfer
-// Analyzes Reference Image (RAW/JPEG/TIFF) & Matches Target Image Look & Feel
+// Perceptual OKLab Luminance-CDF + 5-Zone 2x2 Monge-Kantorovich Color Transfer
+// Encodes a smooth 17x17x17 3D Color Look LUT with Skin Protection & .cube Export
 // ============================================================================
 
 use crate::params::{DevelopParams, WhiteBalanceMode};
-use crate::pipeline::RawSourceImage;
+use crate::pipeline::{render_develop_pipeline, RawSourceImage, RenderOptions};
+
+pub const MATCH_LUT_DIM: usize = 17;
 
 #[derive(Debug, Clone, Default)]
 pub struct ImageColorStats {
@@ -38,6 +41,26 @@ pub struct ImageColorStats {
 }
 
 #[inline]
+pub fn srgb_to_linear_ch(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[inline]
+pub fn linear_to_srgb_ch(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+#[inline]
 fn linear_to_perceptual(c: f32) -> f32 {
     let c = c.max(0.0);
     if c <= 0.0031308 {
@@ -45,6 +68,200 @@ fn linear_to_perceptual(c: f32) -> f32 {
     } else {
         1.055 * c.powf(1.0 / 2.4) - 0.055
     }
+}
+
+/// Converts display sRGB `(r, g, b)` in `0..=1` into perceptual OKLab `(L, a, b)`.
+#[inline]
+pub fn srgb_to_oklab(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let rl = srgb_to_linear_ch(r);
+    let gl = srgb_to_linear_ch(g);
+    let bl = srgb_to_linear_ch(b);
+
+    let l = (0.41222147 * rl + 0.53633255 * gl + 0.05144599 * bl).max(0.0);
+    let m = (0.21190350 * rl + 0.68069955 * gl + 0.10739696 * bl).max(0.0);
+    let s = (0.08830246 * rl + 0.28171884 * gl + 0.62997870 * bl).max(0.0);
+
+    let l_ = l.cbrt();
+    let m_ = m.cbrt();
+    let s_ = s.cbrt();
+
+    let ok_l = 0.21045426 * l_ + 0.79361779 * m_ - 0.00407205 * s_;
+    let ok_a = 1.97799850 * l_ - 2.42859220 * m_ + 0.45059371 * s_;
+    let ok_b = 0.02590404 * l_ + 0.78277177 * m_ - 0.80867577 * s_;
+    (ok_l, ok_a, ok_b)
+}
+
+#[inline]
+fn oklab_to_linear_raw(ok_l: f32, ok_a: f32, ok_b: f32) -> (f32, f32, f32) {
+    let l_ = ok_l + 0.39633778 * ok_a + 0.21580376 * ok_b;
+    let m_ = ok_l - 0.10556135 * ok_a - 0.06385417 * ok_b;
+    let s_ = ok_l - 0.08948418 * ok_a - 1.29148555 * ok_b;
+
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+
+    let r = 4.07674166 * l - 3.30771159 * m + 0.23096993 * s;
+    let g = -1.26843800 * l + 2.60975740 * m - 0.34131940 * s;
+    let b = -0.00419609 * l - 0.70341861 * m + 1.70761470 * s;
+    (r, g, b)
+}
+
+/// Converts OKLab `(L, a, b)` back to in-gamut display sRGB `[0..=1]` with luminance-preserving
+/// soft chroma projection so highlights and saturated tones never hue-shift on clamp.
+#[inline]
+pub fn oklab_to_srgb_gamut(ok_l: f32, ok_a: f32, ok_b: f32) -> (f32, f32, f32) {
+    let l_clamped = ok_l.clamp(0.0, 1.0);
+    let (mut r, mut g, mut b) = oklab_to_linear_raw(l_clamped, ok_a, ok_b);
+    if r < 0.0 || g < 0.0 || b < 0.0 || r > 1.0 || g > 1.0 || b > 1.0 {
+        let mut lo = 0.0f32;
+        let mut hi = 1.0f32;
+        for _ in 0..6 {
+            let mid = 0.5 * (lo + hi);
+            let (tr, tg, tb) = oklab_to_linear_raw(l_clamped, ok_a * mid, ok_b * mid);
+            if tr >= -1e-4 && tg >= -1e-4 && tb >= -1e-4 && tr <= 1.0001 && tg <= 1.0001 && tb <= 1.0001 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let (cr, cg, cb) = oklab_to_linear_raw(l_clamped, ok_a * lo, ok_b * lo);
+        r = cr;
+        g = cg;
+        b = cb;
+    }
+    (linear_to_srgb_ch(r), linear_to_srgb_ch(g), linear_to_srgb_ch(b))
+}
+
+/// Fast trilinear 3D LUT lookup for flattened `dim^3 * 3` sRGB LUT buffers.
+#[inline]
+pub fn sample_lut_3d(lut: &[f32], dim: usize, r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    if dim < 2 || lut.len() != dim * dim * dim * 3 {
+        return (r, g, b);
+    }
+    let scale = (dim - 1) as f32;
+    let rf = (r.clamp(0.0, 1.0) * scale).clamp(0.0, scale);
+    let gf = (g.clamp(0.0, 1.0) * scale).clamp(0.0, scale);
+    let bf = (b.clamp(0.0, 1.0) * scale).clamp(0.0, scale);
+
+    let r0 = (rf.floor() as usize).min(dim - 1);
+    let g0 = (gf.floor() as usize).min(dim - 1);
+    let b0 = (bf.floor() as usize).min(dim - 1);
+    let r1 = (r0 + 1).min(dim - 1);
+    let g1 = (g0 + 1).min(dim - 1);
+    let b1 = (b0 + 1).min(dim - 1);
+
+    let dr = rf - r0 as f32;
+    let dg = gf - g0 as f32;
+    let db = bf - b0 as f32;
+
+    let d2 = dim * dim;
+    let at = |ri: usize, gi: usize, bi: usize| -> (f32, f32, f32) {
+        let base = (bi * d2 + gi * dim + ri) * 3;
+        (lut[base], lut[base + 1], lut[base + 2])
+    };
+    let lerp3 = |c0: (f32, f32, f32), c1: (f32, f32, f32), t: f32| -> (f32, f32, f32) {
+        (
+            c0.0 + (c1.0 - c0.0) * t,
+            c0.1 + (c1.1 - c0.1) * t,
+            c0.2 + (c1.2 - c0.2) * t,
+        )
+    };
+
+    let c00 = lerp3(at(r0, g0, b0), at(r1, g0, b0), dr);
+    let c10 = lerp3(at(r0, g1, b0), at(r1, g1, b0), dr);
+    let c01 = lerp3(at(r0, g0, b1), at(r1, g0, b1), dr);
+    let c11 = lerp3(at(r0, g1, b1), at(r1, g1, b1), dr);
+
+    let c0 = lerp3(c00, c10, dg);
+    let c1 = lerp3(c01, c11, dg);
+    lerp3(c0, c1, db)
+}
+
+/// Applies the matched 3D Color Look LUT with independent `Tonal` (0..100) and `Warna` (0..100)
+/// OKLab blend weights so users can dial contrast/curve and palette strength live in real time.
+#[inline]
+pub fn apply_color_match_lut(
+    r: f32,
+    g: f32,
+    b: f32,
+    lut: &[f32],
+    dim: usize,
+    tone_amount_pct: f32,
+    color_amount_pct: f32,
+) -> (f32, f32, f32) {
+    let wt = (tone_amount_pct / 100.0).clamp(0.0, 1.0);
+    let wc = (color_amount_pct / 100.0).clamp(0.0, 1.0);
+    if (wt <= 1e-4 && wc <= 1e-4) || dim < 2 || lut.len() != dim * dim * dim * 3 {
+        return (r, g, b);
+    }
+
+    let (lr, lg, lb) = sample_lut_3d(lut, dim, r, g, b);
+    if wt >= 0.998 && wc >= 0.998 {
+        return (lr, lg, lb);
+    }
+
+    let (lin_l, lin_a, lin_b) = srgb_to_oklab(r, g, b);
+    let (lut_l, lut_a, lut_b) = srgb_to_oklab(lr, lg, lb);
+
+    let out_l = lin_l + (lut_l - lin_l) * wt;
+    let out_a = lin_a + (lut_a - lin_a) * wc;
+    let out_b = lin_b + (lut_b - lin_b) * wc;
+    oklab_to_srgb_gamut(out_l, out_a, out_b)
+}
+
+/// Exports the matched Reference LUT (including current Tonal & Warna strength) as an Adobe `.cube` file.
+pub fn export_match_cube_lut(params: &DevelopParams) -> Option<String> {
+    if !params.has_color_match_lut() {
+        return None;
+    }
+    let d = params.match_lut_dim as usize;
+    let mut out = String::with_capacity(d * d * d * 28 + 256);
+    let title = if params.match_ref_name.trim().is_empty() {
+        "LightRaw Reference Match"
+    } else {
+        params.match_ref_name.trim()
+    };
+    out.push_str(&format!("TITLE \"{}\" (LightRaw)\n", title.replace('"', "")));
+    out.push_str(&format!("LUT_3D_SIZE {}\n", d));
+    out.push_str("DOMAIN_MIN 0.0 0.0 0.0\n");
+    out.push_str("DOMAIN_MAX 1.0 1.0 1.0\n\n");
+
+    let wt = (params.match_tone_amount / 100.0).clamp(0.0, 1.0);
+    let wc = (params.match_color_amount / 100.0).clamp(0.0, 1.0);
+    let denom = (d - 1) as f32;
+    let d2 = d * d;
+
+    for bi in 0..d {
+        let bf = bi as f32 / denom;
+        for gi in 0..d {
+            let gf = gi as f32 / denom;
+            for ri in 0..d {
+                let rf = ri as f32 / denom;
+                let base = (bi * d2 + gi * d + ri) * 3;
+                let (mr, mg, mb) = (
+                    params.match_lut_data[base],
+                    params.match_lut_data[base + 1],
+                    params.match_lut_data[base + 2],
+                );
+                let (or, og, ob) = if wt >= 0.998 && wc >= 0.998 {
+                    (mr, mg, mb)
+                } else {
+                    let (il, ia, ib) = srgb_to_oklab(rf, gf, bf);
+                    let (ll, la, lb) = srgb_to_oklab(mr, mg, mb);
+                    oklab_to_srgb_gamut(il + (ll - il) * wt, ia + (la - ia) * wc, ib + (lb - ib) * wc)
+                };
+                out.push_str(&format!("{:.6} {:.6} {:.6}\n", or, og, ob));
+            }
+        }
+    }
+    Some(out)
+}
+
+#[inline]
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0).max(1e-5)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Converts RGB chromaticity deviation into a Hue [0..360) and Saturation [0..100]
@@ -70,6 +287,33 @@ fn rgb_to_hue_sat(r: f32, g: f32, b: f32) -> (f32, f32) {
     (hue, sat)
 }
 
+#[inline]
+fn is_skin_srgb(r: f32, g: f32, b: f32, lenient_flat: bool) -> bool {
+    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let (hue, sat) = rgb_to_hue_sat(r, g, b);
+    if lenient_flat {
+        (0.16..=0.90).contains(&lum)
+            && r > g
+            && g > b
+            && (r - g) >= 0.006
+            && (g - b) >= 0.004
+            && (r - b) >= 0.015
+            && (r - b) <= 0.65
+            && (8.0..=52.0).contains(&hue)
+            && (4.0..=75.0).contains(&sat)
+    } else {
+        (0.15..=0.90).contains(&lum)
+            && r > g
+            && g > b
+            && (r - g) >= 0.02
+            && (g - b) >= 0.012
+            && (r - b) >= 0.05
+            && (r - b) <= 0.65
+            && (10.0..=48.0).contains(&hue)
+            && (12.0..=75.0).contains(&sat)
+    }
+}
+
 /// Computes comprehensive statistical color and tone descriptors in a normalized perceptual space.
 /// Accurately bridges 32-bit linear RAW buffers and display-referred JPEG/TIFF buffers.
 pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
@@ -78,12 +322,9 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
         return ImageColorStats::default();
     }
 
-    // Step by stride to sample around 12,000 representative points evenly across the frame
     let sample_target = 12000usize;
     let step = (total_pixels / sample_target).max(1);
 
-    // If image is scene-referred RAW, apply its baseline sensor exposure gain so linear values
-    // map accurately to perceptual 18% middle-gray before statistics are calculated.
     let base_gain = if raw.is_scene_referred {
         let raw_ev_lift = raw.baseline_ev.clamp(-1.0, 1.5) * 0.35 + 0.42;
         2.0f32.powf(raw_ev_lift)
@@ -110,14 +351,12 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
     let mut hl_sum_b = 0.0f64;
     let mut hl_count = 0u64;
 
-    // Skin metrics
     let mut skin_lums: Vec<f32> = Vec::with_capacity(cap / 4);
     let mut skin_sum_rg = 0.0f64;
     let mut skin_sum_bg = 0.0f64;
     let mut skin_sum_hue = 0.0f64;
     let mut skin_sum_sat = 0.0f64;
 
-    // Background backdrop metrics
     let mut bg_lums: Vec<f32> = Vec::with_capacity(cap / 3);
     let mut bg_sum_hue = 0.0f64;
     let mut bg_sum_sat = 0.0f64;
@@ -131,12 +370,10 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
             break;
         }
 
-        // Apply sensor exposure calibration gain
         let r_lin = raw.rgb[buf_idx] * base_gain;
         let g_lin = raw.rgb[buf_idx + 1] * base_gain;
         let b_lin = raw.rgb[buf_idx + 2] * base_gain;
 
-        // Convert to normalized perceptual display space [0.0 .. 1.0]
         let r = linear_to_perceptual(r_lin).clamp(0.0, 1.0);
         let g = linear_to_perceptual(g_lin).clamp(0.0, 1.0);
         let b = linear_to_perceptual(b_lin).clamp(0.0, 1.0);
@@ -147,28 +384,14 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
         lums.push(lum);
         sats.push(sat);
 
-        // Pixel coordinates normalized for semantic lookup
         let px_x = px_idx % width;
         let px_y = px_idx / width;
         let nx = px_x as f32 / width as f32;
         let ny = px_y as f32 / height as f32;
 
         let face_part = raw.sample_face_part(nx, ny);
-        let is_ai_skin = face_part == 1; // 1 = Face Skin
-
-        // Robust colorimetric skin detector (works across Asian, Caucasian, African, Hispanic skin tones)
-        let is_color_skin = lum > 0.15
-            && lum < 0.90
-            && r > g
-            && g > b
-            && (r - g) >= 0.02
-            && (g - b) >= 0.012
-            && (r - b) >= 0.05
-            && (r - b) <= 0.65
-            && (10.0..=48.0).contains(&hue)
-            && (12.0..=75.0).contains(&sat);
-
-        let is_skin = is_ai_skin || is_color_skin;
+        let is_ai_skin = face_part == 1;
+        let is_skin = is_ai_skin || is_skin_srgb(r, g, b, false);
 
         if is_skin {
             skin_lums.push(lum);
@@ -180,7 +403,6 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
             skin_sum_sat += sat as f64;
         }
 
-        // Studio backdrop detection (e.g. blue studio backdrop or saturated background wall)
         let is_studio_backdrop = (180.0..=250.0).contains(&hue) && sat > 25.0 && lum > 0.10;
         if is_studio_backdrop && !is_skin {
             bg_lums.push(lum);
@@ -188,7 +410,6 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
             bg_sum_sat += sat as f64;
         }
 
-        // Classify shadows and highlights for tone curve / split toning
         if lum > 0.02 && lum < 0.30 {
             shd_sum_r += r as f64;
             shd_sum_g += g as f64;
@@ -201,7 +422,6 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
             hl_count += 1;
         }
 
-        // Classify midtones (20% to 80% perceptual luminance) for general white balance
         if (0.20..=0.80).contains(&lum) {
             mid_sum_r += r as f64;
             mid_sum_g += g as f64;
@@ -214,7 +434,6 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
         return ImageColorStats::default();
     }
 
-    // Sort luminance to compute exact percentiles
     lums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = lums.len();
     let p05 = lums[(n as f32 * 0.05) as usize];
@@ -229,7 +448,6 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
     let sum_s: f32 = sats.iter().sum();
     let mean_sat = sum_s / sats.len().max(1) as f32;
 
-    // Midtone chromaticity ratios
     let (mid_rg, mid_bg) = if mid_count > 0 && mid_sum_g > 1e-6 {
         (
             (mid_sum_r / mid_sum_g) as f32,
@@ -239,7 +457,6 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
         (1.0, 1.0)
     };
 
-    // Calculate shadow tint hue and saturation
     let (shadow_hue, shadow_sat) = if shd_count > 0 {
         let sr = (shd_sum_r / shd_count as f64) as f32;
         let sg = (shd_sum_g / shd_count as f64) as f32;
@@ -249,7 +466,6 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
         (0.0, 0.0)
     };
 
-    // Calculate highlight tint hue and saturation
     let (highlight_hue, highlight_sat) = if hl_count > 0 {
         let hr = (hl_sum_r / hl_count as f64) as f32;
         let hg = (hl_sum_g / hl_count as f64) as f32;
@@ -259,23 +475,22 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
         (0.0, 0.0)
     };
 
-    // Compute skin statistics
     let skin_count = skin_lums.len();
-    let (skin_median_lum, skin_mean_rg, skin_mean_bg, skin_mean_hue, skin_mean_sat) = if skin_count > 0 {
-        skin_lums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let med = skin_lums[skin_count / 2];
-        (
-            med,
-            (skin_sum_rg / skin_count as f64) as f32,
-            (skin_sum_bg / skin_count as f64) as f32,
-            (skin_sum_hue / skin_count as f64) as f32,
-            (skin_sum_sat / skin_count as f64) as f32,
-        )
-    } else {
-        (0.0, 1.0, 1.0, 0.0, 0.0)
-    };
+    let (skin_median_lum, skin_mean_rg, skin_mean_bg, skin_mean_hue, skin_mean_sat) =
+        if skin_count > 0 {
+            skin_lums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let med = skin_lums[skin_count / 2];
+            (
+                med,
+                (skin_sum_rg / skin_count as f64) as f32,
+                (skin_sum_bg / skin_count as f64) as f32,
+                (skin_sum_hue / skin_count as f64) as f32,
+                (skin_sum_sat / skin_count as f64) as f32,
+            )
+        } else {
+            (0.0, 1.0, 1.0, 0.0, 0.0)
+        };
 
-    // Compute background backdrop statistics
     let bg_count = bg_lums.len();
     let (bg_median_lum, bg_mean_hue, bg_mean_sat) = if bg_count > 0 {
         bg_lums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -316,151 +531,685 @@ pub fn extract_image_color_stats(raw: &RawSourceImage) -> ImageColorStats {
     }
 }
 
-/// Computes matched `DevelopParams` by analyzing the reference image and transferring
-/// its exposure, tone curve contrast, white balance color temperature, vibrance, and color grading.
-/// Applies intelligent portrait skin-tone protection and gentle photographic bounds.
+/// Downsamples a `RawSourceImage` to at most `max_dim` before rendering pre-LUT baseline pixels.
+fn downsample_raw_for_match(src: &RawSourceImage, max_dim: u32) -> RawSourceImage {
+    let cur_max = src.width.max(src.height);
+    if cur_max <= max_dim || cur_max == 0 {
+        return src.clone();
+    }
+    let scale = max_dim as f32 / cur_max as f32;
+    let nw = ((src.width as f32 * scale).round() as u32).max(16);
+    let nh = ((src.height as f32 * scale).round() as u32).max(16);
+    let mut rgb = vec![0.0f32; (nw * nh * 3) as usize];
+    for y in 0..nh {
+        let sy = ((y as f32 + 0.5) / nh as f32 * src.height as f32) as usize;
+        let sy = sy.min(src.height.saturating_sub(1) as usize);
+        for x in 0..nw {
+            let sx = ((x as f32 + 0.5) / nw as f32 * src.width as f32) as usize;
+            let sx = sx.min(src.width.saturating_sub(1) as usize);
+            let si = (sy * src.width as usize + sx) * 3;
+            let di = (y as usize * nw as usize + x as usize) * 3;
+            rgb[di] = src.rgb[si];
+            rgb[di + 1] = src.rgb[si + 1];
+            rgb[di + 2] = src.rgb[si + 2];
+        }
+    }
+    RawSourceImage::from_linear_rgb(
+        nw,
+        nh,
+        nw,
+        nh,
+        rgb,
+        src.as_shot_temp,
+        src.as_shot_tint,
+        src.baseline_ev,
+        src.is_scene_referred,
+    )
+}
+
+/// Renders up to ~12,000 representative perceptual sRGB triplets for Color Match fitting.
+fn sample_rendered_srgb_samples(raw: &RawSourceImage, params: Option<&DevelopParams>) -> Vec<(f32, f32, f32)> {
+    let small = downsample_raw_for_match(raw, 160);
+    let total = (small.width * small.height) as usize;
+    if total == 0 {
+        return Vec::new();
+    }
+
+    if let Some(p_orig) = params {
+        let mut p = p_orig.clone();
+        p.clear_color_match_lut();
+        p.post_crop_vignette_amount = 0.0;
+        p.grain_amount = 0.0;
+        let frame = render_develop_pipeline(
+            &small,
+            &p,
+            RenderOptions {
+                apply_crop: false,
+                is_draft_interactive: true,
+                ..RenderOptions::default()
+            },
+        );
+        let n = frame.rgba.len() / 4;
+        let step = (n / 12000).max(1);
+        let mut out = Vec::with_capacity(n / step + 4);
+        for i in (0..n).step_by(step) {
+            let o = i * 4;
+            out.push((
+                frame.rgba[o] as f32 / 255.0,
+                frame.rgba[o + 1] as f32 / 255.0,
+                frame.rgba[o + 2] as f32 / 255.0,
+            ));
+        }
+        return out;
+    }
+
+    let step = (total / 12000).max(1);
+    let base_gain = if small.is_scene_referred {
+        2.0f32.powf(small.baseline_ev.clamp(-1.0, 1.5) * 0.35 + 0.42)
+    } else {
+        1.0
+    };
+    let mut out = Vec::with_capacity(total / step + 4);
+    for i in (0..total).step_by(step) {
+        let o = i * 3;
+        if o + 2 >= small.rgb.len() {
+            break;
+        }
+        out.push((
+            linear_to_perceptual(small.rgb[o] * base_gain).clamp(0.0, 1.0),
+            linear_to_perceptual(small.rgb[o + 1] * base_gain).clamp(0.0, 1.0),
+            linear_to_perceptual(small.rgb[o + 2] * base_gain).clamp(0.0, 1.0),
+        ));
+    }
+    out
+}
+
+/// Extracts 10 representative RGB swatches sorted from deep shadows through midtones to highlights.
+pub fn extract_reference_palette(samples: &[(f32, f32, f32)], count: usize) -> Vec<[u8; 3]> {
+    if samples.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    let mut labs: Vec<(f32, f32, f32, f32, f32, f32)> = samples
+        .iter()
+        .map(|&(r, g, b)| {
+            let (l, a, okb) = srgb_to_oklab(r, g, b);
+            (l, a, okb, r, g, b)
+        })
+        .collect();
+    labs.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let n = labs.len();
+    let mut palette = Vec::with_capacity(count);
+    for k in 0..count {
+        let start = (k * n) / count;
+        let end = (((k + 1) * n) / count).max(start + 1).min(n);
+        let mut sum_w = 0.0f64;
+        let mut sum_r = 0.0f64;
+        let mut sum_g = 0.0f64;
+        let mut sum_b = 0.0f64;
+        for &(_l, a, okb, r, g, b) in &labs[start..end] {
+            let chroma = (a * a + okb * okb).sqrt();
+            // Slightly prefer chromatic swatches in midtones so accents appear clearly
+            let w = (0.35 + chroma * 6.0) as f64;
+            sum_w += w;
+            sum_r += r as f64 * w;
+            sum_g += g as f64 * w;
+            sum_b += b as f64 * w;
+        }
+        let mr = ((sum_r / sum_w.max(1e-6)) * 255.0).round().clamp(0.0, 255.0) as u8;
+        let mg = ((sum_g / sum_w.max(1e-6)) * 255.0).round().clamp(0.0, 255.0) as u8;
+        let mb = ((sum_b / sum_w.max(1e-6)) * 255.0).round().clamp(0.0, 255.0) as u8;
+        palette.push([mr, mg, mb]);
+    }
+    palette
+}
+
+#[derive(Clone, Copy, Default)]
+struct Mat2 {
+    m00: f32,
+    m01: f32,
+    m10: f32,
+    m11: f32,
+}
+
+impl Mat2 {
+    #[inline]
+    fn mul(self, rhs: Self) -> Self {
+        Self {
+            m00: self.m00 * rhs.m00 + self.m01 * rhs.m10,
+            m01: self.m00 * rhs.m01 + self.m01 * rhs.m11,
+            m10: self.m10 * rhs.m00 + self.m11 * rhs.m10,
+            m11: self.m10 * rhs.m01 + self.m11 * rhs.m11,
+        }
+    }
+
+    #[inline]
+    fn apply(self, x: f32, y: f32) -> (f32, f32) {
+        (self.m00 * x + self.m01 * y, self.m10 * x + self.m11 * y)
+    }
+}
+
+/// Eigen-decomposition of a 2x2 symmetric matrix `[[a, b], [b, c]]`, returning `(cos, sin, lam1, lam2)`.
+#[inline]
+fn eigen_sym_2x2(a: f32, b: f32, c: f32) -> (f32, f32, f32, f32) {
+    let tr = 0.5 * (a + c);
+    let diff = 0.5 * (a - c);
+    let rad = (diff * diff + b * b).sqrt();
+    let l1 = (tr + rad).max(0.0);
+    let l2 = (tr - rad).max(0.0);
+    let theta = if b.abs() < 1e-10 && diff.abs() < 1e-10 {
+        0.0
+    } else {
+        0.5 * b.atan2(diff)
+    };
+    (theta.cos(), theta.sin(), l1, l2)
+}
+
+#[inline]
+fn reconstruct_sym_2x2(cos_t: f32, sin_t: f32, d1: f32, d2: f32) -> Mat2 {
+    let c2 = cos_t * cos_t;
+    let s2 = sin_t * sin_t;
+    let cs = cos_t * sin_t;
+    Mat2 {
+        m00: d1 * c2 + d2 * s2,
+        m01: (d1 - d2) * cs,
+        m10: (d1 - d2) * cs,
+        m11: d1 * s2 + d2 * c2,
+    }
+}
+
+/// Computes regularized 2x2 Monge-Kantorovich chromatic covariance transport matrix:
+/// `T = Sigma_t^(-1/2) * (Sigma_t^(1/2) * Sigma_r * Sigma_t^(1/2))^(1/2) * Sigma_t^(-1/2)`.
+fn compute_mk_2x2(
+    t_aa: f32,
+    t_ab: f32,
+    t_bb: f32,
+    r_aa: f32,
+    r_ab: f32,
+    r_bb: f32,
+    eps: f32,
+    max_gain: f32,
+) -> Mat2 {
+    let (ct, st, tl1, tl2) = eigen_sym_2x2(t_aa + eps, t_ab, t_bb + eps);
+    let sqrt_t = reconstruct_sym_2x2(ct, st, tl1.sqrt(), tl2.sqrt());
+    let inv_sqrt_t = reconstruct_sym_2x2(ct, st, 1.0 / tl1.sqrt(), 1.0 / tl2.sqrt());
+
+    let sig_r = Mat2 {
+        m00: r_aa + eps,
+        m01: r_ab,
+        m10: r_ab,
+        m11: r_bb + eps,
+    };
+    let inner = sqrt_t.mul(sig_r).mul(sqrt_t);
+    let (cp, sp, pl1, pl2) = eigen_sym_2x2(inner.m00, 0.5 * (inner.m01 + inner.m10), inner.m11);
+    let sqrt_inner = reconstruct_sym_2x2(cp, sp, pl1.sqrt(), pl2.sqrt());
+
+    let t_mat = inv_sqrt_t.mul(sqrt_inner).mul(inv_sqrt_t);
+    // Softly bound principal gains to prevent amplifying shadow banding / compression noise
+    let sym_ab = 0.5 * (t_mat.m01 + t_mat.m10);
+    let (cm, sm, ml1, ml2) = eigen_sym_2x2(t_mat.m00, sym_ab, t_mat.m11);
+    reconstruct_sym_2x2(cm, sm, ml1.clamp(0.35, max_gain), ml2.clamp(0.35, max_gain))
+}
+
+#[inline]
+fn quantile_from_sorted(sorted: &[f32], q: f32) -> f32 {
+    if sorted.is_empty() {
+        return 0.5;
+    }
+    let idx_f = q.clamp(0.0, 1.0) * (sorted.len() - 1) as f32;
+    let i0 = idx_f.floor() as usize;
+    let i1 = (i0 + 1).min(sorted.len() - 1);
+    let frac = idx_f - i0 as f32;
+    sorted[i0] * (1.0 - frac) + sorted[i1] * frac
+}
+
+#[inline]
+fn cdf_rank(sorted: &[f32], x: f32) -> f32 {
+    if sorted.len() <= 1 {
+        return x.clamp(0.0, 1.0);
+    }
+    let lo = sorted.partition_point(|&v| v < x);
+    let hi = sorted.partition_point(|&v| v <= x);
+    if lo < hi {
+        // Midpoint quantile for tied plateaus so flat patches/skin map smoothly at center rank
+        return (0.5 * (lo + hi - 1) as f32) / (sorted.len() - 1) as f32;
+    }
+    if lo == 0 {
+        return 0.0;
+    }
+    if lo >= sorted.len() {
+        return 1.0;
+    }
+    let v0 = sorted[lo - 1];
+    let v1 = sorted[lo];
+    let frac = if (v1 - v0).abs() > 1e-6 {
+        ((x - v0) / (v1 - v0)).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    ((lo - 1) as f32 + frac) / (sorted.len() - 1) as f32
+}
+
+/// Core 3D LUT generator matching OKLab luminance CDF and 5-zone chromatic distributions.
+fn build_match_3d_lut(
+    ref_srgb: &[(f32, f32, f32)],
+    tgt_srgb: &[(f32, f32, f32)],
+    target_is_scene_referred: bool,
+    force_raw_flat: Option<bool>,
+) -> (Vec<f32>, bool) {
+    let dim = MATCH_LUT_DIM;
+    if ref_srgb.is_empty() || tgt_srgb.is_empty() {
+        return (Vec::new(), false);
+    }
+
+    let mut ref_labs = Vec::with_capacity(ref_srgb.len());
+    let mut ref_l_sorted = Vec::with_capacity(ref_srgb.len());
+    let mut ref_skin_l = Vec::new();
+    let mut ref_skin_a_sum = 0.0f64;
+    let mut ref_skin_b_sum = 0.0f64;
+
+    for &(r, g, b) in ref_srgb {
+        let (l, a, okb) = srgb_to_oklab(r, g, b);
+        ref_labs.push((l, a, okb));
+        ref_l_sorted.push(l);
+        if is_skin_srgb(r, g, b, false) {
+            ref_skin_l.push(l);
+            ref_skin_a_sum += a as f64;
+            ref_skin_b_sum += okb as f64;
+        }
+    }
+    ref_l_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut tgt_l_sorted = Vec::with_capacity(tgt_srgb.len());
+    for &(r, g, b) in tgt_srgb {
+        let (l, _, _) = srgb_to_oklab(r, g, b);
+        tgt_l_sorted.push(l);
+    }
+    tgt_l_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let tgt_p05 = quantile_from_sorted(&tgt_l_sorted, 0.05);
+    let tgt_p95 = quantile_from_sorted(&tgt_l_sorted, 0.95);
+    let tgt_spread = (tgt_p95 - tgt_p05).max(0.02);
+    let is_flat = force_raw_flat.unwrap_or_else(|| {
+        target_is_scene_referred || tgt_spread < 0.48 || tgt_p05 > 0.13
+    });
+
+    let mut tgt_labs = Vec::with_capacity(tgt_srgb.len());
+    let mut tgt_skin_l = Vec::new();
+    let mut tgt_skin_a_sum = 0.0f64;
+    let mut tgt_skin_b_sum = 0.0f64;
+    for &(r, g, b) in tgt_srgb {
+        let (l, a, okb) = srgb_to_oklab(r, g, b);
+        tgt_labs.push((l, a, okb));
+        if is_skin_srgb(r, g, b, is_flat) {
+            tgt_skin_l.push(l);
+            tgt_skin_a_sum += a as f64;
+            tgt_skin_b_sum += okb as f64;
+        }
+    }
+
+    // --- Step 1: 65-entry Smooth Luminance CDF Curve (`L_map[0..=64]`) ---
+    const L_BINS: usize = 65;
+    let mut l_map = [0.0f32; L_BINS];
+    let t01 = quantile_from_sorted(&tgt_l_sorted, 0.01);
+    let t99 = quantile_from_sorted(&tgt_l_sorted, 0.99);
+    let r01 = quantile_from_sorted(&ref_l_sorted, 0.01);
+    let r99 = quantile_from_sorted(&ref_l_sorted, 0.99);
+
+    let cdf_strength = if is_flat { 0.92 } else { 0.85 };
+    for i in 0..L_BINS {
+        let x = i as f32 / (L_BINS - 1) as f32;
+        let q = cdf_rank(&tgt_l_sorted, x);
+        let l_ref = if x < t01 {
+            let k = (x / t01.max(0.02)).clamp(0.0, 1.0);
+            let target_lo = (r01 * 0.72).min(0.04);
+            target_lo + (r01 - target_lo) * k
+        } else if x > t99 {
+            let k = ((x - t99) / (1.0 - t99).max(0.02)).clamp(0.0, 1.0);
+            let target_hi = r99.max(0.90);
+            r99 + (target_hi - r99) * k
+        } else {
+            quantile_from_sorted(&ref_l_sorted, q)
+        };
+        l_map[i] = x + (l_ref - x) * cdf_strength;
+    }
+
+    // Portrait face brightness floor so dark moody references (e.g. Joker) crush shadows/bg
+    // while keeping subject faces readable & sculpted without blowing out brighter highlights.
+    if tgt_skin_l.len() >= 20 {
+        tgt_skin_l.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let t_skin_med = tgt_skin_l[tgt_skin_l.len() / 2];
+        let idx = ((t_skin_med * (L_BINS - 1) as f32).round() as usize).min(L_BINS - 1);
+        let mapped_skin = l_map[idx];
+        let floor_skin = if ref_skin_l.len() >= 20 {
+            ref_skin_l.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let r_skin_med = ref_skin_l[ref_skin_l.len() / 2];
+            r_skin_med.clamp(0.44, 0.80) * 0.6 + t_skin_med.clamp(0.46, 0.80) * 0.4
+        } else {
+            (t_skin_med * 0.82).clamp(0.46, 0.76)
+        };
+        if mapped_skin < floor_skin {
+            let lift = floor_skin - mapped_skin;
+            let ceil_guard = r99.max(floor_skin + 0.06).min(0.94);
+            for i in 0..L_BINS {
+                let x = i as f32 / (L_BINS - 1) as f32;
+                let w = (-((x - t_skin_med) / 0.16).powi(2)).exp();
+                let lifted = (l_map[i] + lift * w * 0.88).min(ceil_guard);
+                if lifted > l_map[i] {
+                    l_map[i] = lifted;
+                }
+            }
+        }
+    }
+
+    // Smooth & enforce clean monotonic slope without clipping or solarization
+    let min_step = 0.25 / (L_BINS - 1) as f32;
+    let max_step = (if is_flat { 3.1 } else { 2.2 }) / (L_BINS - 1) as f32;
+    for _ in 0..4 {
+        let prev = l_map;
+        for i in 1..(L_BINS - 1) {
+            l_map[i] = 0.22 * prev[i - 1] + 0.56 * prev[i] + 0.22 * prev[i + 1];
+        }
+    }
+    l_map[0] = l_map[0].clamp(0.0, 0.12);
+    for i in 1..L_BINS {
+        let hi = (l_map[i - 1] + max_step).min(1.0);
+        let lo = (l_map[i - 1] + min_step).min(hi);
+        l_map[i] = l_map[i].clamp(lo, hi);
+    }
+    l_map[L_BINS - 1] = l_map[L_BINS - 1].clamp(0.86, 1.0);
+
+    let eval_l_map = |l_val: f32| -> f32 {
+        let f = (l_val.clamp(0.0, 1.0) * (L_BINS - 1) as f32).clamp(0.0, (L_BINS - 1) as f32);
+        let i0 = (f.floor() as usize).min(L_BINS - 1);
+        let i1 = (i0 + 1).min(L_BINS - 1);
+        let frac = f - i0 as f32;
+        l_map[i0] * (1.0 - frac) + l_map[i1] * frac
+    };
+
+    // --- Step 2: 5-Zone OKLab Mean + 2x2 Covariance Transfer Matrices ---
+    const ZONES: usize = 5;
+    let centers = [0.10f32, 0.30, 0.50, 0.70, 0.90];
+    let zone_sigma = 0.21f32;
+
+    #[derive(Clone, Copy, Default)]
+    struct ZoneStats {
+        w_sum: f64,
+        a_sum: f64,
+        b_sum: f64,
+        aa_sum: f64,
+        ab_sum: f64,
+        bb_sum: f64,
+    }
+    impl ZoneStats {
+        fn add(&mut self, a: f32, b: f32, w: f32) {
+            let w = w as f64;
+            let a = a as f64;
+            let b = b as f64;
+            self.w_sum += w;
+            self.a_sum += w * a;
+            self.b_sum += w * b;
+            self.aa_sum += w * a * a;
+            self.ab_sum += w * a * b;
+            self.bb_sum += w * b * b;
+        }
+        fn finalize(self) -> (f32, f32, f32, f32, f32) {
+            if self.w_sum < 1e-4 {
+                return (0.0, 0.0, 0.0005, 0.0, 0.0005);
+            }
+            let mu_a = (self.a_sum / self.w_sum) as f32;
+            let mu_b = (self.b_sum / self.w_sum) as f32;
+            let vaa = ((self.aa_sum / self.w_sum) as f32 - mu_a * mu_a).max(1e-6);
+            let vab = (self.ab_sum / self.w_sum) as f32 - mu_a * mu_b;
+            let vbb = ((self.bb_sum / self.w_sum) as f32 - mu_b * mu_b).max(1e-6);
+            (mu_a, mu_b, vaa, vab, vbb)
+        }
+    }
+
+    let mut t_zones = [ZoneStats::default(); ZONES];
+    let mut r_zones = [ZoneStats::default(); ZONES];
+
+    for &(l, a, okb) in &tgt_labs {
+        // Align target tonal zone by post-tonal quantile-mapped lightness!
+        let l_eff = eval_l_map(l);
+        for z in 0..ZONES {
+            let w = (-((l_eff - centers[z]) / zone_sigma).powi(2)).exp();
+            if w > 0.01 {
+                t_zones[z].add(a, okb, w);
+            }
+        }
+    }
+    for &(l, a, okb) in &ref_labs {
+        for z in 0..ZONES {
+            let w = (-((l - centers[z]) / zone_sigma).powi(2)).exp();
+            if w > 0.01 {
+                r_zones[z].add(a, okb, w);
+            }
+        }
+    }
+
+    let eps = if is_flat { 0.00022 } else { 0.00042 };
+    let max_gain = if is_flat { 2.65 } else { 1.90 };
+
+    let mut mu_t = [(0.0f32, 0.0f32); ZONES];
+    let mut mu_r = [(0.0f32, 0.0f32); ZONES];
+    let mut t_mats = [Mat2::default(); ZONES];
+
+    for z in 0..ZONES {
+        let (ta, tb, taa, tab, tbb) = t_zones[z].finalize();
+        let (ra, rb, raa, rab, rbb) = r_zones[z].finalize();
+        mu_t[z] = (ta, tb);
+        mu_r[z] = (ra, rb);
+        t_mats[z] = compute_mk_2x2(taa, tab, tbb, raa, rab, rbb, eps, max_gain);
+    }
+
+    // Prepare target skin protection parameters when subject skin exists
+    let has_tgt_skin = tgt_skin_l.len() >= 20;
+    let has_ref_skin = ref_skin_l.len() >= 20;
+    let (tgt_skin_mu_a, tgt_skin_mu_b) = if has_tgt_skin {
+        (
+            (tgt_skin_a_sum / tgt_skin_l.len() as f64) as f32,
+            (tgt_skin_b_sum / tgt_skin_l.len() as f64) as f32,
+        )
+    } else {
+        (0.035, 0.045)
+    };
+    let ref_skin_info = if has_ref_skin {
+        let a = (ref_skin_a_sum / ref_skin_l.len() as f64) as f32;
+        let b = (ref_skin_b_sum / ref_skin_l.len() as f64) as f32;
+        Some((b.atan2(a), (a * a + b * b).sqrt()))
+    } else {
+        None
+    };
+
+    // --- Step 3: Populate 17x17x17 3D LUT ---
+    let mut lut = vec![0.0f32; dim * dim * dim * 3];
+    let denom = (dim - 1) as f32;
+    let d2 = dim * dim;
+
+    for bi in 0..dim {
+        let b = bi as f32 / denom;
+        for gi in 0..dim {
+            let g = gi as f32 / denom;
+            for ri in 0..dim {
+                let r = ri as f32 / denom;
+                let (l_in, a_in, b_in) = srgb_to_oklab(r, g, b);
+                let l_out = eval_l_map(l_in);
+
+                let mut w = [0.0f32; ZONES];
+                let mut w_sum = 0.0f32;
+                for z in 0..ZONES {
+                    w[z] = (-((l_out - centers[z]) / zone_sigma).powi(2)).exp();
+                    w_sum += w[z];
+                }
+                let inv_w = if w_sum > 1e-6 { 1.0 / w_sum } else { 1.0 / ZONES as f32 };
+
+                let mut a_mk = 0.0f32;
+                let mut b_mk = 0.0f32;
+                for z in 0..ZONES {
+                    let wz = w[z] * inv_w;
+                    let da = a_in - mu_t[z].0;
+                    let db = b_in - mu_t[z].1;
+                    let (ta, tb) = t_mats[z].apply(da, db);
+                    a_mk += wz * (mu_r[z].0 + ta);
+                    b_mk += wz * (mu_r[z].1 + tb);
+                }
+
+                // Pure specular white highlight guard so crisp white fabrics stay clean
+                let c_in = (a_in * a_in + b_in * b_in).sqrt();
+                if l_in > 0.85 && c_in < 0.03 {
+                    let hi_guard = smoothstep(0.85, 0.99, l_in) * (1.0 - smoothstep(0.01, 0.03, c_in));
+                    a_mk *= 1.0 - hi_guard * 0.55;
+                    b_mk *= 1.0 - hi_guard * 0.55;
+                }
+
+                // Natural Skin Corridor Protection on portraits: shadows/foliage/backdrop
+                // match 100% unconstrained, while face skin retains realistic warmth without turning green/gray.
+                let (mut a_out, mut b_out) = (a_mk, b_mk);
+                if has_tgt_skin && c_in > 0.004 && l_in > 0.18 && l_in < 0.90 {
+                    let ang_in = b_in.atan2(a_in); // radians
+                    let skin_ang_center = tgt_skin_mu_b.atan2(tgt_skin_mu_a).clamp(0.32, 0.96);
+                    let ang_diff = (ang_in - skin_ang_center).abs();
+                    let min_c = if is_flat { 0.006 } else { 0.016 };
+                    if ang_diff < 0.42 && c_in >= min_c && c_in < 0.16 {
+                        let w_ang = 1.0 - smoothstep(0.16, 0.42, ang_diff);
+                        let w_lum = smoothstep(0.18, 0.34, l_in) * (1.0 - smoothstep(0.80, 0.92, l_in));
+                        let w_ch = 1.0 - smoothstep(0.10, 0.16, c_in);
+                        let skin_w = (w_ang * w_lum * w_ch).clamp(0.0, 1.0);
+                        if skin_w > 0.01 {
+                            let mk_ang = b_out.atan2(a_out);
+                            let mk_c = (a_out * a_out + b_out * b_out).sqrt();
+                            let (target_ang, min_sk_c, max_sk_c) = if let Some((ref_ang, ref_c)) = ref_skin_info {
+                                let clamped_ref_ang = ref_ang.clamp(0.40, 0.98);
+                                let blended_ang = clamped_ref_ang * 0.72 + mk_ang.clamp(0.36, 1.02) * 0.28;
+                                (blended_ang, (ref_c * 0.65).clamp(0.045, 0.085), 0.135)
+                            } else {
+                                // Stylized non-portrait ref (e.g. Joker): warm healthy corridor with subtle mood hint
+                                let healthy = skin_ang_center.clamp(0.46, 0.88);
+                                let hinted = healthy + (mk_ang - healthy).clamp(-0.16, 0.16);
+                                (hinted, if is_flat { 0.055 } else { 0.042 }, 0.125)
+                            };
+                            let target_c = mk_c.clamp(min_sk_c, max_sk_c);
+                            let safe_a = target_c * target_ang.cos();
+                            let safe_b = target_c * target_ang.sin();
+                            let blend = skin_w * 0.72;
+                            a_out += (safe_a - a_out) * blend;
+                            b_out += (safe_b - b_out) * blend;
+                        }
+                    }
+                }
+
+                let (ro, go, bo) = oklab_to_srgb_gamut(l_out, a_out, b_out);
+                let idx = (bi * d2 + gi * dim + ri) * 3;
+                lut[idx] = ro;
+                lut[idx + 1] = go;
+                lut[idx + 2] = bo;
+            }
+        }
+    }
+
+    (lut, is_flat)
+}
+
+/// Computes matched `DevelopParams` using both photographic baseline anchors and a perceptual
+/// 17x17x17 OKLab 3D Color Look LUT (`Tonal 0..100%`, `Warna 0..100%`, `Raw/Flat` mode + Palette).
 pub fn match_color_and_tone(
     ref_raw: &RawSourceImage,
     ref_params: Option<&DevelopParams>,
     target_raw: &RawSourceImage,
     target_params: &DevelopParams,
 ) -> DevelopParams {
+    match_color_and_tone_ex(ref_raw, ref_params, target_raw, target_params, None, "Reference")
+}
+
+pub fn match_color_and_tone_ex(
+    ref_raw: &RawSourceImage,
+    ref_params: Option<&DevelopParams>,
+    target_raw: &RawSourceImage,
+    target_params: &DevelopParams,
+    force_raw_flat: Option<bool>,
+    ref_name: &str,
+) -> DevelopParams {
     let ref_stats = extract_image_color_stats(ref_raw);
     let tgt_stats = extract_image_color_stats(target_raw);
 
     let mut matched = target_params.clone();
+    matched.clear_color_match_lut();
 
-    // -------------------------------------------------------------------------
-    // 1. Exposure Matching with Portrait Face Protection
-    // -------------------------------------------------------------------------
+    // Gentle, portrait-safe baseline adjustments keep Basic sliders clean & tweakable
     let delta_ev = if ref_stats.skin_pixel_count >= 30 && tgt_stats.skin_pixel_count >= 30 {
-        // Both images contain human subjects: Match skin luminance directly so faces are
-        // exposed consistently and whites/skin are never blown out!
         let ref_skin = ref_stats.skin_median_lum.max(0.12);
         let tgt_skin = tgt_stats.skin_median_lum.max(0.12);
-        let ev = (ref_skin - tgt_skin) * 1.8;
-        ev.clamp(-0.65, 0.65)
+        ((ref_skin - tgt_skin) * 1.4).clamp(-0.55, 0.55)
     } else {
-        // General scene: use median perceptual midtone luminance difference
         let ref_m = ref_stats.p50_lum.max(0.05);
         let tgt_m = tgt_stats.p50_lum.max(0.05);
-        let ev = (ref_m - tgt_m) * 1.5;
-        ev.clamp(-0.75, 0.75)
+        ((ref_m - tgt_m) * 1.1).clamp(-0.60, 0.60)
     };
-
     matched.exposure_2012 = (target_params.exposure_2012 + delta_ev).clamp(-3.0, 3.0);
 
-    // -------------------------------------------------------------------------
-    // 2. Dynamic Range & Contrast Matching
-    // -------------------------------------------------------------------------
     let ref_spread = (ref_stats.p95_lum - ref_stats.p05_lum).max(0.08);
     let tgt_spread = (tgt_stats.p95_lum - tgt_stats.p05_lum).max(0.08);
-    let contrast_ratio = ref_spread / tgt_spread;
-    let delta_contrast = ((contrast_ratio - 1.0) * 30.0).clamp(-18.0, 22.0);
+    let delta_contrast = ((ref_spread / tgt_spread - 1.0) * 12.0).clamp(-10.0, 12.0);
     matched.contrast_2012 = (target_params.contrast_2012 + delta_contrast).clamp(-50.0, 50.0);
 
-    // Whites: subtle natural adjustment (NEVER slam to -100!)
-    let delta_whites = ((ref_stats.p95_lum - tgt_stats.p95_lum) * 25.0).clamp(-15.0, 15.0);
-    matched.whites_2012 = (target_params.whites_2012 + delta_whites).clamp(-25.0, 25.0);
+    let delta_whites = ((ref_stats.p95_lum - tgt_stats.p95_lum) * 15.0).clamp(-12.0, 12.0);
+    matched.whites_2012 = (target_params.whites_2012 + delta_whites).clamp(-20.0, 20.0);
 
-    // Blacks: subtle shadow lift or crush
-    let delta_blacks = ((ref_stats.p05_lum - tgt_stats.p05_lum) * 30.0).clamp(-15.0, 15.0);
-    matched.blacks_2012 = (target_params.blacks_2012 + delta_blacks).clamp(-25.0, 25.0);
-
-    // Highlights & Shadows
-    let delta_hl = ((tgt_stats.p95_lum - ref_stats.p95_lum) * -30.0).clamp(-25.0, 20.0);
-    matched.highlights_2012 = (target_params.highlights_2012 + delta_hl).clamp(-50.0, 30.0);
-
-    let delta_shd = ((ref_stats.p25_lum - tgt_stats.p25_lum) * 35.0).clamp(-20.0, 25.0);
-    matched.shadows_2012 = (target_params.shadows_2012 + delta_shd).clamp(-40.0, 50.0);
-
-    // -------------------------------------------------------------------------
-    // 3. White Balance & Color Temperature Matching
-    // -------------------------------------------------------------------------
     matched.white_balance = WhiteBalanceMode::Custom;
-
     let (delta_temp, delta_tint) = if ref_stats.skin_pixel_count >= 30 && tgt_stats.skin_pixel_count >= 30 {
-        // Portrait mode: Match skin chromatic warmth rather than whole-frame clothing/backdrop colors!
         let rg_diff = ref_stats.skin_mean_rg - tgt_stats.skin_mean_rg;
         let bg_diff = ref_stats.skin_mean_bg - tgt_stats.skin_mean_bg;
-        let d_k = ((rg_diff - bg_diff) * 850.0).clamp(-300.0, 300.0);
-        let d_t = ((rg_diff + bg_diff - 2.0) * 8.0).clamp(-5.0, 5.0);
-        (d_k, d_t)
+        (
+            ((rg_diff - bg_diff) * 700.0).clamp(-260.0, 260.0),
+            ((rg_diff + bg_diff - 2.0) * 6.0).clamp(-5.0, 5.0),
+        )
     } else {
-        // General scenes or synthetic buffers:
         let rg_diff = ref_stats.mid_rg_ratio - tgt_stats.mid_rg_ratio;
         let bg_diff = ref_stats.mid_bg_ratio - tgt_stats.mid_bg_ratio;
-        let d_k = ((rg_diff - bg_diff) * 750.0).clamp(-400.0, 400.0);
-        let d_t = ((rg_diff + bg_diff - 2.0) * 8.0).clamp(-6.0, 6.0);
-        (d_k, d_t)
+        (
+            ((rg_diff - bg_diff) * 650.0).clamp(-340.0, 340.0),
+            ((rg_diff + bg_diff - 2.0) * 6.0).clamp(-5.0, 5.0),
+        )
     };
-
     matched.temperature = (target_params.temperature + delta_temp).clamp(2800.0, 12000.0);
     matched.tint = (target_params.tint + delta_tint).clamp(-50.0, 50.0);
 
-    // -------------------------------------------------------------------------
-    // 4. Vibrance & Saturation Matching
-    // -------------------------------------------------------------------------
-    let sat_diff = (ref_stats.mean_sat - tgt_stats.mean_sat) * 30.0;
-    matched.vibrance = (target_params.vibrance + sat_diff).clamp(-20.0, 30.0);
-    matched.saturation = (target_params.saturation + sat_diff * 0.5).clamp(-15.0, 20.0);
-
-    // -------------------------------------------------------------------------
-    // 5. Shadow & Highlight Color Grading (Split Toning)
-    // -------------------------------------------------------------------------
-    if ref_stats.shadow_sat > 2.0 {
-        matched.split_toning_shadow_hue = ref_stats.shadow_hue;
-        matched.split_toning_shadow_saturation = (ref_stats.shadow_sat * 0.35).clamp(0.0, 35.0);
-    }
-    if ref_stats.highlight_sat > 2.0 {
-        matched.split_toning_highlight_hue = ref_stats.highlight_hue;
-        matched.split_toning_highlight_saturation = (ref_stats.highlight_sat * 0.30).clamp(0.0, 30.0);
-    }
-
-    // -------------------------------------------------------------------------
-    // 6. Inherit Detailed Creative Tone Curve, Calibration & HSL if Reference has Develop adjustments
-    // -------------------------------------------------------------------------
+    // Optional reference-edit presence nuance if Reference also has explicit Develop metadata
     if let Some(rp) = ref_params {
-        if !rp.tone_curve_pv2012.is_empty() {
-            matched.tone_curve_pv2012 = rp.tone_curve_pv2012.clone();
-            matched.tone_curve_name_2012 = rp.tone_curve_name_2012.clone();
-        }
-        if !rp.tone_curve_pv2012_red.is_empty() {
-            matched.tone_curve_pv2012_red = rp.tone_curve_pv2012_red.clone();
-        }
-        if !rp.tone_curve_pv2012_green.is_empty() {
-            matched.tone_curve_pv2012_green = rp.tone_curve_pv2012_green.clone();
-        }
-        if !rp.tone_curve_pv2012_blue.is_empty() {
-            matched.tone_curve_pv2012_blue = rp.tone_curve_pv2012_blue.clone();
-        }
-        matched.parametric_highlights = rp.parametric_highlights;
-        matched.parametric_lights = rp.parametric_lights;
-        matched.parametric_darks = rp.parametric_darks;
-        matched.parametric_shadows = rp.parametric_shadows;
-
-        // Copy 8-Band HSL color shifts
-        matched.hue_adjustment = rp.hue_adjustment;
-        matched.saturation_adjustment = rp.saturation_adjustment;
-        matched.luminance_adjustment = rp.luminance_adjustment;
-
-        // Copy Color Grading Midtones and Global
-        matched.color_grade_midtone_hue = rp.color_grade_midtone_hue;
-        matched.color_grade_midtone_sat = rp.color_grade_midtone_sat;
-        matched.color_grade_midtone_lum = rp.color_grade_midtone_lum;
-        matched.color_grade_global_hue = rp.color_grade_global_hue;
-        matched.color_grade_global_sat = rp.color_grade_global_sat;
-        matched.color_grade_global_lum = rp.color_grade_global_lum;
-        matched.color_grade_blending = rp.color_grade_blending;
-        matched.split_toning_balance = rp.split_toning_balance;
-
-        // Copy Presence nuance
         matched.texture = (matched.texture * 0.5 + rp.texture * 0.5).clamp(-100.0, 100.0);
         matched.clarity_2012 = (matched.clarity_2012 * 0.5 + rp.clarity_2012 * 0.5).clamp(-100.0, 100.0);
         matched.dehaze = (matched.dehaze * 0.5 + rp.dehaze * 0.5).clamp(-100.0, 100.0);
+    }
 
-        // Copy camera profile if applicable
-        matched.camera_profile = rp.camera_profile;
+    // Sample ACTUAL pixels arriving at Stage 9.5 (rendered baseline with `matched` pre-LUT!)
+    // so the 3D LUT aligns pixel-for-pixel with the live Develop pipeline!
+    let ref_samples = sample_rendered_srgb_samples(ref_raw, ref_params);
+    let tgt_samples = sample_rendered_srgb_samples(target_raw, Some(&matched));
+    let palette = extract_reference_palette(&ref_samples, 10);
+    let (lut_data, is_flat) = build_match_3d_lut(
+        &ref_samples,
+        &tgt_samples,
+        target_raw.is_scene_referred,
+        force_raw_flat,
+    );
+
+    if lut_data.len() == MATCH_LUT_DIM * MATCH_LUT_DIM * MATCH_LUT_DIM * 3 {
+        matched.match_lut_dim = MATCH_LUT_DIM as u8;
+        matched.match_lut_data = lut_data;
+        matched.match_tone_amount = if target_params.has_color_match_lut() {
+            target_params.match_tone_amount.clamp(0.0, 100.0)
+        } else {
+            100.0
+        };
+        matched.match_color_amount = if target_params.has_color_match_lut() {
+            target_params.match_color_amount.clamp(0.0, 100.0)
+        } else {
+            100.0
+        };
+        matched.match_raw_flat = is_flat;
+        matched.match_palette = palette;
+        matched.match_ref_name = ref_name.to_string();
     }
 
     matched

@@ -559,6 +559,7 @@ fn collapse_other_panels_if_solo(app: &mut LightRawApp, opened_panel: &'static s
     if !app.solo_mode_right_panels {
         return;
     }
+    app.dev_match_ref_open = opened_panel == "Match Reference";
     app.dev_basic_open = opened_panel == "Basic";
     app.dev_curve_open = opened_panel == "Tone Curve";
     app.dev_hsl_open = opened_panel == "Color Mixer";
@@ -730,6 +731,7 @@ fn render_develop_right_panel(app: &mut LightRawApp, ctx: &egui::Context, ui: &m
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if !app.photos.is_empty() {
+                        render_panel_match_reference(app, ctx, ui);
                         render_panel_basic(app, ui);
                         render_panel_tone_curve(app, ui);
                         render_panel_color_mixer(app, ui);
@@ -827,6 +829,206 @@ fn panel_wrap(
             });
     }
     open_val
+}
+
+fn render_panel_match_reference(app: &mut LightRawApp, ctx: &egui::Context, ui: &mut Ui) {
+    let mut p = app.active_photo().params.clone();
+    let is_mod = p.has_color_match_lut();
+    let open = app.dev_match_ref_open;
+    let next_open = panel_wrap(app, ui, "Match Reference", open, is_mod, None, |app, ui| {
+        // Preview Card / Drag-and-Drop Zone for External or Catalog Reference Photo
+        let ref_tex = if app.external_reference_raw.is_some() {
+            app.ensure_external_reference_texture(ctx)
+        } else {
+            app.reference_photo_id
+                .filter(|&id| id != app.active_photo_id)
+                .and_then(|id| app.get_thumb_texture(ctx, id))
+        };
+
+        let box_w = ui.available_width().max(120.0);
+        let box_h = if ref_tex.is_some() { 82.0 } else { 54.0 };
+        let (drop_rect, drop_resp) =
+            ui.allocate_exact_size(Vec2::new(box_w, box_h), Sense::click());
+        let is_hovered = drop_resp.hovered();
+        let has_dropped_hover = ctx.input(|i| !i.raw.hovered_files.is_empty());
+
+        ui.painter().rect_filled(
+            drop_rect,
+            5.0,
+            if has_dropped_hover {
+                Color32::from_rgb(52, 68, 92)
+            } else {
+                Color32::from_rgb(28, 29, 34)
+            },
+        );
+        ui.painter().rect_stroke(
+            drop_rect,
+            5.0,
+            Stroke::new(
+                1.0,
+                if has_dropped_hover || is_hovered {
+                    Colors::ACCENT_BLUE
+                } else {
+                    Color32::from_rgb(62, 64, 72)
+                },
+            ),
+        );
+
+        if let Some(tex) = ref_tex {
+            let ts = tex.size_vec2();
+            let sc = ((drop_rect.width() - 8.0) / ts.x).min((drop_rect.height() - 8.0) / ts.y);
+            let dst = Rect::from_center_size(drop_rect.center(), ts * sc);
+            ui.painter().image(
+                tex.id(),
+                dst,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        } else {
+            ui.painter().text(
+                drop_rect.center() - Vec2::new(0.0, 7.0),
+                egui::Align2::CENTER_CENTER,
+                "Drop or Click to Pick Reference Image",
+                egui::FontId::proportional(11.0),
+                Colors::TEXT_MAIN,
+            );
+            ui.painter().text(
+                drop_rect.center() + Vec2::new(0.0, 9.0),
+                egui::Align2::CENTER_CENTER,
+                "Matches tonal curve & film color palette",
+                egui::FontId::proportional(9.5),
+                Colors::TEXT_DIM,
+            );
+        }
+
+        if drop_resp.clicked() {
+            app.pick_external_reference_photo();
+            return;
+        }
+        if drop_resp.hovered() {
+            let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+            if let Some(path) = dropped.into_iter().find_map(|f| f.path) {
+                app.apply_external_reference_path(path, None);
+                return;
+            }
+        }
+
+        // Extracted 10-Swatch Dominant Reference Color Palette Bar
+        if !p.match_palette.is_empty() {
+            ui.add_space(4.0);
+            let sw_count = p.match_palette.len();
+            let bar_w = ui.available_width();
+            let (bar_rect, _) = ui.allocate_exact_size(Vec2::new(bar_w, 12.0), Sense::hover());
+            let tile_w = bar_w / sw_count as f32;
+            for (idx, &[r, g, b]) in p.match_palette.iter().enumerate() {
+                let tr = Rect::from_min_max(
+                    Pos2::new(bar_rect.min.x + idx as f32 * tile_w, bar_rect.min.y),
+                    Pos2::new(bar_rect.min.x + (idx + 1) as f32 * tile_w - 0.5, bar_rect.max.y),
+                );
+                ui.painter().rect_filled(tr, 1.5, Color32::from_rgb(r, g, b));
+            }
+        }
+
+        ui.add_space(5.0);
+        ui.horizontal(|ui| {
+            if lr_bevel_button(ui, "Pick Image...", 92.0, 22.0).clicked() {
+                app.pick_external_reference_photo();
+                return;
+            }
+            let cur_ref = if !p.match_ref_name.is_empty() {
+                p.match_ref_name.clone()
+            } else {
+                app.reference_photo_id
+                    .and_then(|id| app.photos.iter().find(|ph| ph.id == id))
+                    .map(|ph| ph.file_name.clone())
+                    .unwrap_or_else(|| "Catalog Ref...".into())
+            };
+            let catalog_choices: Vec<(i64, String)> = app
+                .photos
+                .iter()
+                .filter(|ph| ph.id != app.active_photo_id)
+                .map(|ph| (ph.id, ph.file_name.clone()))
+                .collect();
+            let mut chosen_catalog_ref: Option<i64> = None;
+            egui::ComboBox::from_id_salt("match_panel_catalog_ref")
+                .selected_text(cur_ref)
+                .width((ui.available_width() - 4.0).max(80.0))
+                .show_ui(ui, |ui| {
+                    for (ph_id, ph_name) in &catalog_choices {
+                        if ui
+                            .selectable_label(
+                                app.external_reference_raw.is_none()
+                                    && app.reference_photo_id == Some(*ph_id),
+                                ph_name,
+                            )
+                            .clicked()
+                        {
+                            chosen_catalog_ref = Some(*ph_id);
+                        }
+                    }
+                });
+            if let Some(ph_id) = chosen_catalog_ref {
+                app.external_reference_path = None;
+                app.external_reference_raw = None;
+                app.external_reference_tex = None;
+                app.reference_photo_id = Some(ph_id);
+                app.auto_match_color_with_mode(None);
+            }
+        });
+
+        ui.add_space(5.0);
+        let is_flat = p.match_raw_flat;
+        // Normal vs Raw/Flat (Log) Source Expansion Toggle
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Source :").size(10.5).color(Colors::TEXT_MID));
+            if ui.selectable_label(!is_flat, "Normal").clicked() && is_flat {
+                app.auto_match_color_with_mode(Some(false));
+                return;
+            }
+            if ui.selectable_label(is_flat, "Raw / Flat").clicked() && !is_flat {
+                app.auto_match_color_with_mode(Some(true));
+                return;
+            }
+        });
+
+        if is_mod {
+            ui.add_space(4.0);
+            let mut changed = false;
+            if lr_slider(ui, "Tonal", &mut p.match_tone_amount, 0.0..=100.0, 100.0, "{:.0}%") {
+                changed = true;
+            }
+            if lr_slider(ui, "Warna", &mut p.match_color_amount, 0.0..=100.0, 100.0, "{:.0}%") {
+                changed = true;
+            }
+            if changed {
+                app.commit_params_change("Adjust Match Amount", p);
+            }
+
+            ui.add_space(5.0);
+            ui.horizontal(|ui| {
+                if lr_bevel_button(ui, "Re-Match", 76.0, 22.0).clicked() {
+                    app.auto_match_color_with_mode(Some(is_flat));
+                    return;
+                }
+                if lr_bevel_button(ui, "Export .cube", 82.0, 22.0).clicked() {
+                    app.export_match_cube_file();
+                    return;
+                }
+                if lr_bevel_button(ui, "Clear", 56.0, 22.0).clicked() {
+                    app.clear_color_match_reference();
+                    return;
+                }
+            });
+        } else {
+            ui.add_space(4.0);
+            if lr_bevel_button(ui, "⚡ Auto Match Color to Ref", ui.available_width(), 24.0)
+                .clicked()
+            {
+                app.auto_match_color_to_reference();
+            }
+        }
+    });
+    app.dev_match_ref_open = next_open;
 }
 
 fn render_panel_basic(app: &mut LightRawApp, ui: &mut Ui) {

@@ -31,7 +31,7 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
-            echo "LIGHTRAW_VERSION=1.2.0" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_VERSION=1.2.1" >> "$GITHUB_ENV"
           fi
 
       - name: Package LightRaw.app
@@ -103,7 +103,7 @@ jobs:
         shell: pwsh
         run: |
           $ref = $env:GITHUB_REF_NAME
-          if ($ref -and $ref.StartsWith("v")) { $ver = $ref.Substring(1) } else { $ver = "1.2.0" }
+          if ($ref -and $ref.StartsWith("v")) { $ver = $ref.Substring(1) } else { $ver = "1.2.1" }
           "LIGHTRAW_VERSION=$ver" >> $env:GITHUB_ENV
 
       - name: Build Inno Setup Installer (.exe)
@@ -116,7 +116,7 @@ jobs:
         run: |
           wix extension add WixToolset.UI.wixext || true
           $wxs = Get-Content packaging/windows/LightRaw.wxs -Raw
-          $wxs = $wxs -replace '1\.2\.0\.0', "$($env:LIGHTRAW_VERSION).0" -replace 'LightRaw 1\.2\.0', "LightRaw $($env:LIGHTRAW_VERSION)"
+          $wxs = $wxs -replace '1\.2\.1\.0', "$($env:LIGHTRAW_VERSION).0" -replace 'LightRaw 1\.2\.1', "LightRaw $($env:LIGHTRAW_VERSION)"
           Set-Content -Path packaging/windows/LightRaw.wxs -Value $wxs -Encoding UTF8
           wix build -arch x64 packaging/windows/LightRaw.wxs -o "dist/LightRaw-$($env:LIGHTRAW_VERSION).msi" || true
 
@@ -155,7 +155,7 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
-            echo "LIGHTRAW_VERSION=1.2.0" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_VERSION=1.2.1" >> "$GITHUB_ENV"
           fi
 
       - name: Build Debian Package (.deb)
@@ -267,7 +267,7 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             echo "LIGHTRAW_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
-            echo "LIGHTRAW_VERSION_NAME=1.2.0" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_VERSION_NAME=1.2.1" >> "$GITHUB_ENV"
           fi
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > "${GITHUB_WORKSPACE}/android/lightraw-release.jks"
@@ -345,7 +345,7 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
-            echo "LIGHTRAW_VERSION=1.2.0" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_VERSION=1.2.1" >> "$GITHUB_ENV"
           fi
 
       - name: Create GitHub Release
@@ -371,6 +371,8 @@ jobs:
             - **Linux (Universal)**: `LightRaw-${{ env.LIGHTRAW_VERSION }}-x86_64.AppImage` & `lightraw-${{ env.LIGHTRAW_VERSION }}-linux-x86_64.tar.gz`
 
             ### Key Features & Improvements:
+            - **Perceptual 3D Reference Color Match (`Tonal %` + `Warna %`)**: Match flat/LOG or normal photos directly to any external reference photo using 5-zone OKLab Monge-Kantorovich covariance transfer + Luminance CDF `17×17×17` 3D LUT with 10-swatch palette preview, portrait skin protection, `Normal` / `Raw / Flat` source toggle, and `.cube` LUT export
+            - **Android Native JNI Sync Fix**: Full camelCase/Base64 LUT synchronization in `liblightraw_jni.so` so every Develop slider, curve, mask, and 3D Color Match renders identically on Release APKs
             - **Real-Time Interactive Slider Editing**: Smooth real-time preview while dragging Exposure and Develop sliders on both Desktop (`1024px` draft + zero-lag zoom cache) and Android (conflated single-worker `540px` bilinear preview + automatic full-res settle)
             - **Built-In Auto-Update**: In-app GitHub Releases updater on both Desktop and Android so you can upgrade in place without uninstalling or losing your catalog, photos, and presets
             - **Camera RAW Develop Pipeline**: 11-stage ACR PV2012 non-destructive float pipeline

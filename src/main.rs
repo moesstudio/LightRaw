@@ -1347,4 +1347,120 @@ mod tests {
             matched.temperature
         );
     }
+
+    #[test]
+    fn test_slog3_flat_portrait_matches_cinema_joker_and_retro_references() {
+        use crate::ai::color_match::{export_match_cube_lut, match_color_and_tone_ex};
+        use crate::params::DevelopParams;
+        use crate::pipeline::{render_develop_pipeline, RawSourceImage, RenderOptions};
+
+        let w = 80u32;
+        let h = 80u32;
+        let n = (w * h) as usize;
+
+        // Helper converts perceptual sRGB test colors to Linear RGB as expected by `from_linear_rgb`
+        let to_lin = |c: f32| -> f32 {
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+
+        // Target: Flat S-Log3 / ungraded washed-out portrait (sRGB ~0.25 lifted blacks, low sat/contrast)
+        let mut slog_rgb = vec![0.0f32; n * 3];
+        for i in 0..n {
+            if i < n / 3 {
+                // Dark foliage / water shadows lifted into flat log gray (sRGB 0.25, 0.28, 0.26)
+                slog_rgb[i * 3 + 0] = to_lin(0.25);
+                slog_rgb[i * 3 + 1] = to_lin(0.28);
+                slog_rgb[i * 3 + 2] = to_lin(0.26);
+            } else if i < (2 * n) / 3 {
+                // Washed-out S-Log3 skin midtones (sRGB 0.62, 0.58, 0.54)
+                slog_rgb[i * 3 + 0] = to_lin(0.62);
+                slog_rgb[i * 3 + 1] = to_lin(0.58);
+                slog_rgb[i * 3 + 2] = to_lin(0.54);
+            } else {
+                // Flat stone bridge highlights (sRGB 0.74, 0.74, 0.72)
+                slog_rgb[i * 3 + 0] = to_lin(0.74);
+                slog_rgb[i * 3 + 1] = to_lin(0.74);
+                slog_rgb[i * 3 + 2] = to_lin(0.72);
+            }
+        }
+        let slog_tgt = RawSourceImage::from_linear_rgb(
+            w, h, w, h, slog_rgb, 5500.0, 0.0, 0.0, false,
+        );
+
+        let make_ref = |shd_srgb: [f32; 3], mid_srgb: [f32; 3], hi_srgb: [f32; 3]| -> RawSourceImage {
+            let mut rgb = vec![0.0f32; n * 3];
+            for i in 0..n {
+                let c = if i < n / 3 {
+                    shd_srgb
+                } else if i < (2 * n) / 3 {
+                    mid_srgb
+                } else {
+                    hi_srgb
+                };
+                rgb[i * 3 + 0] = to_lin(c[0]);
+                rgb[i * 3 + 1] = to_lin(c[1]);
+                rgb[i * 3 + 2] = to_lin(c[2]);
+            }
+            RawSourceImage::from_linear_rgb(w, h, w, h, rgb, 5500.0, 0.0, 0.0, false)
+        };
+
+        // 1. Joker reference (display sRGB colors): deep dark olive-emerald shadows, moody olive-gold midtones, warm highlight
+        let joker_ref = make_ref([0.04, 0.11, 0.06], [0.28, 0.30, 0.15], [0.80, 0.70, 0.48]);
+        let joker_matched = match_color_and_tone_ex(
+            &joker_ref,
+            None,
+            &slog_tgt,
+            &DevelopParams::default(),
+            None,
+            "Joker_Ref.jpg",
+        );
+        assert!(joker_matched.has_color_match_lut());
+        assert!(joker_matched.match_raw_flat, "Flat S-Log3 target should auto-detect raw/flat mode");
+        assert_eq!(joker_matched.match_palette.len(), 10);
+
+        let joker_frame = render_develop_pipeline(&slog_tgt, &joker_matched, RenderOptions::default());
+        let shd_r = joker_frame.rgba[0] as f32 / 255.0;
+        let shd_g = joker_frame.rgba[1] as f32 / 255.0;
+        let shd_b = joker_frame.rgba[2] as f32 / 255.0;
+        // Shadows must drop significantly below lifted 0.26 gray and adopt olive/teal character!
+        assert!(shd_r < 0.16 && shd_b < 0.16, "Expected crushed dark shadows from LOG: ({shd_r}, {shd_g}, {shd_b})");
+        assert!(shd_g > shd_r, "Expected olive/green mood in Joker shadows: ({shd_r}, {shd_g}, {shd_b})");
+
+        // Portrait skin pixel in middle band must retain healthy R > G > B warmth (NOT zombie green!)
+        let skin_off = (n / 2) * 4;
+        let sk_r = joker_frame.rgba[skin_off] as f32 / 255.0;
+        let sk_g = joker_frame.rgba[skin_off + 1] as f32 / 255.0;
+        let sk_b = joker_frame.rgba[skin_off + 2] as f32 / 255.0;
+        assert!(sk_r > sk_g && sk_g > sk_b, "Skin should preserve healthy warmth R>G>B: ({sk_r}, {sk_g}, {sk_b})");
+        assert!(sk_r > 0.38, "Skin must stay bright & readable even with dark ref: ({sk_r})");
+
+        // 2. Retro Golden Film reference: rich warm amber midtones & golden highlights
+        let retro_ref = make_ref([0.08, 0.07, 0.04], [0.58, 0.42, 0.24], [0.92, 0.80, 0.56]);
+        let retro_matched = match_color_and_tone_ex(
+            &retro_ref,
+            None,
+            &slog_tgt,
+            &DevelopParams::default(),
+            Some(true),
+            "Retro_Film.jpg",
+        );
+        let retro_frame = render_develop_pipeline(&slog_tgt, &retro_matched, RenderOptions::default());
+        let hi_off = (n - 4) * 4;
+        let hi_r = retro_frame.rgba[hi_off] as f32 / 255.0;
+        let hi_b = retro_frame.rgba[hi_off + 2] as f32 / 255.0;
+        assert!(hi_r > hi_b + 0.06, "Expected warm golden highlights from Retro ref: r={hi_r} b={hi_b}");
+
+        // 3. Tonal=0 & Warna=0 gives identity LUT output, and .cube export is valid 17x17x17
+        let mut zero_amt = joker_matched.clone();
+        zero_amt.match_tone_amount = 0.0;
+        zero_amt.match_color_amount = 0.0;
+        let zero_frame = render_develop_pipeline(&slog_tgt, &zero_amt, RenderOptions::default());
+        let z_shd_g = zero_frame.rgba[1] as f32 / 255.0;
+        assert!((z_shd_g - shd_g).abs() > 0.08, "Zero Tonal/Warna must undo the LUT look");
+
+        let cube = export_match_cube_lut(&joker_matched).expect("cube LUT text");
+        assert!(cube.contains("LUT_3D_SIZE 17"));
+        let triplet_lines = cube.lines().filter(|l| l.split_whitespace().count() == 3 && l.chars().next().is_some_and(|c| c.is_ascii_digit())).count();
+        assert_eq!(triplet_lines, 17 * 17 * 17);
+    }
 }

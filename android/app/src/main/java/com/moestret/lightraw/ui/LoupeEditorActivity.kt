@@ -51,6 +51,9 @@ class LoupeEditorActivity : AppCompatActivity() {
     private var asset: PhotoAsset? = null
     private var previewSource: Bitmap? = null
     private var scrubPreviewSource: Bitmap? = null
+    private var lastRefBitmap: Bitmap? = null
+    private var lastRefParams: DevelopParams? = null
+    private var lastRefName: String = "Reference"
     private var currentParams = DevelopParams()
 
     private val undoStack = ArrayDeque<DevelopParams>()
@@ -447,6 +450,17 @@ class LoupeEditorActivity : AppCompatActivity() {
                 binding.loupeView.invalidate()
             },
             getActiveMaskId = { binding.loupeView.activeMaskId },
+            getReferenceThumb = { lastRefBitmap },
+            triggerRematchRawFlat = { wantFlat ->
+                val ref = lastRefBitmap
+                if (ref != null && !ref.isRecycled) {
+                    scope.launch {
+                        applyColorMatch(ref, lastRefParams, wantFlat, lastRefName)
+                    }
+                } else {
+                    showMatchReferencePicker()
+                }
+            },
             rebuildPanel = { rebuildActivePanel() }
         )
         LoupePanels.renderTab(activeTab, host)
@@ -618,8 +632,7 @@ class LoupeEditorActivity : AppCompatActivity() {
                             MediaStoreImporter.decodeScaledBitmap(this@LoupeEditorActivity, refAsset.uriString, 720)
                         }
                         if (refBmp != null) {
-                            applyColorMatch(refBmp, refAsset.params)
-                            refBmp.recycle()
+                            applyColorMatch(refBmp, refAsset.params, null, refAsset.displayName)
                         }
                     }
                 }
@@ -628,27 +641,44 @@ class LoupeEditorActivity : AppCompatActivity() {
     }
 
     private fun runColorMatchFromUri(uri: Uri) {
+        val display = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "Gallery Reference"
         scope.launch {
             val refBmp = withContext(Dispatchers.IO) {
-                MediaStoreImporter.decodeScaledBitmap(this@LoupeEditorActivity, uri.toString(), 720)
+                MediaStoreImporter.decodeScaledBitmap(this@LoupeEditorActivity, uri.toString(), 512)
             }
             if (refBmp != null) {
-                applyColorMatch(refBmp, null)
-                refBmp.recycle()
+                applyColorMatch(refBmp, null, null, display)
             } else {
                 Toast.makeText(this@LoupeEditorActivity, "Failed to read reference image", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    private suspend fun applyColorMatch(refBmp: Bitmap, refParams: DevelopParams?) {
+    private suspend fun applyColorMatch(
+        refBmp: Bitmap,
+        refParams: DevelopParams?,
+        forceRawFlat: Boolean? = null,
+        refName: String = "Reference"
+    ) {
         val tgt = previewSource ?: return
-        val matched = withContext(Dispatchers.Default) {
-            AiColorMatchEngine.matchToReference(refBmp, tgt, refParams, currentParams)
+        if (lastRefBitmap !== refBmp) {
+            val prevRef = lastRefBitmap
+            lastRefBitmap = refBmp
+            if (prevRef != null && !prevRef.isRecycled) {
+                prevRef.recycle()
+            }
         }
-        updateParams(matched, commit = true, historyLabel = "AI Color Match")
+        lastRefParams = refParams?.deepCopy()
+        lastRefName = refName
+
+        val matched = withContext(Dispatchers.Default) {
+            AiColorMatchEngine.matchToReference(refBmp, tgt, refParams, currentParams, forceRawFlat, refName)
+        }
+        updateParams(matched, commit = true, historyLabel = "AI Color Match: $refName")
+        activeTab = LoupePanels.ToolTab.AI_MATCH
+        rebuildToolRail()
         rebuildActivePanel()
-        Toast.makeText(this, "Matched tone, WB & palette to reference", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Matched tone & palette to $refName", Toast.LENGTH_SHORT).show()
     }
 
     private fun showMoreMenu() {
@@ -750,5 +780,7 @@ class LoupeEditorActivity : AppCompatActivity() {
             scrubPreviewSource?.recycle()
         }
         previewSource?.recycle()
+        lastRefBitmap?.recycle()
+        lastRefBitmap = null
     }
 }

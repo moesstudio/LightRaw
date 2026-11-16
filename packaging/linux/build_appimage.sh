@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build Universal Linux AppImage (runs on Ubuntu, Fedora, Arch, Debian, openSUSE)
-VERSION="${LIGHTRAW_VERSION:-1.2.0}"
+VERSION="${LIGHTRAW_VERSION:-1.2.1}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_DIR="${DIST_DIR}/AppDir"

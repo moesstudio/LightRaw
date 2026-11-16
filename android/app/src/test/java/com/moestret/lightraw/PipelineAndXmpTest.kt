@@ -201,4 +201,81 @@ class PipelineAndXmpTest {
             com.moestret.lightraw.data.AppUpdater.selectApkAssetName(assets, isDebugPackage = true)
         )
     }
+
+    @Test
+    fun mobileColorMatchGenerates3dLutPaletteAndSerializesCleanly() {
+        fun argb(r: Float, g: Float, b: Float): Int {
+            val ri = (r * 255f).toInt().coerceIn(0, 255)
+            val gi = (g * 255f).toInt().coerceIn(0, 255)
+            val bi = (b * 255f).toInt().coerceIn(0, 255)
+            return (0xFF shl 24) or (ri shl 16) or (gi shl 8) or bi
+        }
+
+        // Target: Flat washed-out S-Log3 portrait (lifted gray ~0.26, dull skin, muted highlights)
+        val n = 900
+        val tgtPx = IntArray(n) { i ->
+            when {
+                i < n / 3 -> argb(0.25f, 0.28f, 0.26f)
+                i < (2 * n) / 3 -> argb(0.62f, 0.58f, 0.54f)
+                else -> argb(0.74f, 0.74f, 0.72f)
+            }
+        }
+        // Reference: Moody olive-emerald Joker palette with rich shadows & warm gold highlights
+        val refPx = IntArray(n) { i ->
+            when {
+                i < n / 3 -> argb(0.04f, 0.11f, 0.06f)
+                i < (2 * n) / 3 -> argb(0.28f, 0.30f, 0.15f)
+                else -> argb(0.80f, 0.70f, 0.48f)
+            }
+        }
+
+        val matched = com.moestret.lightraw.engine.AiColorMatchEngine.matchPixelsToReference(
+            refPixels = refPx,
+            targetPixels = tgtPx,
+            targetParams = DevelopParams(),
+            forceRawFlat = null,
+            refName = "Joker_Ref"
+        )
+
+        assertTrue(matched.hasColorMatchLut())
+        assertTrue(matched.matchRawFlat)
+        assertEquals(10, matched.matchPalette.size)
+        assertEquals("Joker_Ref", matched.matchRefName)
+
+        // Check shadow crush & olive mood on sampled 3D LUT output
+        val outRgb = FloatArray(3)
+        val tmp1 = FloatArray(3); val tmp2 = FloatArray(3); val tmp3 = FloatArray(3); val tmp4 = FloatArray(3)
+        com.moestret.lightraw.engine.AiColorMatchEngine.applyColorMatchLut(
+            0.25f, 0.28f, 0.26f,
+            matched.matchLutData, matched.matchLutDim,
+            100f, 100f,
+            tmp1, tmp2, tmp3, tmp4, outRgb
+        )
+        assertTrue("Expected dark crushed shadow output: ${outRgb[0]}", outRgb[0] < 0.16f)
+        assertTrue("Expected olive/green mood G>R: ${outRgb[1]} vs ${outRgb[0]}", outRgb[1] > outRgb[0])
+
+        // Check Tonal=0, Warna=0 restores exact identity
+        com.moestret.lightraw.engine.AiColorMatchEngine.applyColorMatchLut(
+            0.25f, 0.28f, 0.26f,
+            matched.matchLutData, matched.matchLutDim,
+            0f, 0f,
+            tmp1, tmp2, tmp3, tmp4, outRgb
+        )
+        assertEquals(0.25f, outRgb[0], 0.005f)
+
+        // Check Base64 uint16 LUT roundtrip, deepCopy, interpolate, and CopySettingsMask preservation
+        val b64 = DevelopParams.encodeLutB64(matched.matchLutData)
+        val decodedLut = DevelopParams.decodeLutB64(b64, matched.matchLutData.size)
+        assertEquals(matched.matchLutData.size, decodedLut.size)
+        assertEquals(matched.matchLutData[500], decodedLut[500], 0.001f)
+
+        val copied = com.moestret.lightraw.model.CopySettingsMask(colorGrading = true)
+            .applyTo(matched, DevelopParams())
+        assertTrue(copied.hasColorMatchLut())
+        assertEquals("Joker_Ref", copied.matchRefName)
+
+        val halfStrength = DevelopParams.interpolate(DevelopParams(), matched, 50f)
+        assertEquals(50f, halfStrength.matchToneAmount, 0.1f)
+        assertEquals(50f, halfStrength.matchColorAmount, 0.1f)
+    }
 }

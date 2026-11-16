@@ -2,6 +2,9 @@ package com.moestret.lightraw.model
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.Base64
 import java.util.UUID
 
 enum class WhiteBalanceMode(val label: String) {
@@ -198,8 +201,29 @@ data class DevelopParams(
     val masks: List<MaskGroup> = emptyList(),
     val retouchSpots: List<RetouchArea> = emptyList(),
     val appliedPresetName: String = "",
-    val presetAmount: Float = 100f
+    val presetAmount: Float = 100f,
+    // Reference Color & Tone Match (17x17x17 OKLab 3D Look LUT)
+    val matchLutDim: Int = 0,
+    val matchLutData: FloatArray = FloatArray(0),
+    val matchToneAmount: Float = 100f,
+    val matchColorAmount: Float = 100f,
+    val matchRawFlat: Boolean = false,
+    val matchPalette: IntArray = IntArray(0),
+    val matchRefName: String = ""
 ) {
+    fun hasColorMatchLut(): Boolean =
+        matchLutDim >= 2 && matchLutData.size == matchLutDim * matchLutDim * matchLutDim * 3
+
+    fun clearColorMatch(): DevelopParams = copy(
+        matchLutDim = 0,
+        matchLutData = FloatArray(0),
+        matchToneAmount = 100f,
+        matchColorAmount = 100f,
+        matchRawFlat = false,
+        matchPalette = IntArray(0),
+        matchRefName = ""
+    )
+
     fun deepCopy(): DevelopParams = copy(
         toneCurveMaster = toneCurveMaster.toList(),
         toneCurveRed = toneCurveRed.toList(),
@@ -210,7 +234,9 @@ data class DevelopParams(
         luminanceAdjustment = luminanceAdjustment.copyOf(),
         grayMixer = grayMixer.copyOf(),
         masks = masks.map { it.copy(brushPoints = it.brushPoints.toList()) },
-        retouchSpots = retouchSpots.toList()
+        retouchSpots = retouchSpots.toList(),
+        matchLutData = matchLutData.copyOf(),
+        matchPalette = matchPalette.copyOf()
     )
 
     fun toJsonString(): String {
@@ -328,6 +354,15 @@ data class DevelopParams(
         o.put("retouchSpots", rArr)
         o.put("appliedPresetName", appliedPresetName)
         o.put("presetAmount", presetAmount.toDouble())
+        o.put("matchLutDim", matchLutDim)
+        if (hasColorMatchLut()) {
+            o.put("matchLutB64", encodeLutB64(matchLutData))
+        }
+        o.put("matchToneAmount", matchToneAmount.toDouble())
+        o.put("matchColorAmount", matchColorAmount.toDouble())
+        o.put("matchRawFlat", matchRawFlat)
+        o.put("matchPalette", encodeIntArray(matchPalette))
+        o.put("matchRefName", matchRefName)
         return o.toString()
     }
 
@@ -375,6 +410,35 @@ data class DevelopParams(
                 out[i] = arr.optDouble(i, 0.0).toFloat()
             }
             return out
+        }
+
+        private fun encodeIntArray(arr: IntArray): JSONArray =
+            JSONArray().apply { arr.forEach { put(it) } }
+
+        private fun decodeIntArray(arr: JSONArray?): IntArray {
+            if (arr == null) return IntArray(0)
+            return IntArray(arr.length()) { i -> arr.optInt(i, 0) }
+        }
+
+        internal fun encodeLutB64(data: FloatArray): String {
+            val buf = ByteBuffer.allocate(data.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+            for (v in data) {
+                val q = (v.coerceIn(0f, 1f) * 65535f + 0.5f).toInt().coerceIn(0, 65535)
+                buf.putShort(q.toShort())
+            }
+            return Base64.getEncoder().encodeToString(buf.array())
+        }
+
+        internal fun decodeLutB64(b64: String, expectedLen: Int): FloatArray {
+            if (b64.isEmpty() || expectedLen <= 0) return FloatArray(0)
+            return try {
+                val bytes = Base64.getDecoder().decode(b64)
+                if (bytes.size != expectedLen * 2) return FloatArray(0)
+                val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+                FloatArray(expectedLen) { (buf.getShort().toInt() and 0xFFFF) / 65535f }
+            } catch (_: Exception) {
+                FloatArray(0)
+            }
         }
 
         fun fromJsonString(json: String?): DevelopParams {
@@ -519,7 +583,16 @@ data class DevelopParams(
                     masks = maskList,
                     retouchSpots = retouchList,
                     appliedPresetName = o.optString("appliedPresetName", ""),
-                    presetAmount = o.optDouble("presetAmount", 100.0).toFloat()
+                    presetAmount = o.optDouble("presetAmount", 100.0).toFloat(),
+                    matchLutDim = o.optInt("matchLutDim", 0),
+                    matchLutData = o.optInt("matchLutDim", 0).let { d ->
+                        if (d >= 2) decodeLutB64(o.optString("matchLutB64", ""), d * d * d * 3) else FloatArray(0)
+                    },
+                    matchToneAmount = o.optDouble("matchToneAmount", 100.0).toFloat(),
+                    matchColorAmount = o.optDouble("matchColorAmount", 100.0).toFloat(),
+                    matchRawFlat = o.optBoolean("matchRawFlat", false),
+                    matchPalette = decodeIntArray(o.optJSONArray("matchPalette")),
+                    matchRefName = o.optString("matchRefName", "")
                 )
             } catch (_: Exception) {
                 DevelopParams()
@@ -556,7 +629,13 @@ data class DevelopParams(
                 cgHighSat = mix(base.cgHighSat, target.cgHighSat).coerceIn(0f, 100f),
                 vignetteAmount = mix(base.vignetteAmount, target.vignetteAmount).coerceIn(-100f, 100f),
                 grainAmount = mix(base.grainAmount, target.grainAmount).coerceIn(0f, 100f),
-                presetAmount = amountPct
+                presetAmount = amountPct,
+                matchToneAmount = if (target.hasColorMatchLut()) {
+                    mix(if (base.hasColorMatchLut()) base.matchToneAmount else 0f, target.matchToneAmount).coerceIn(0f, 100f)
+                } else target.matchToneAmount,
+                matchColorAmount = if (target.hasColorMatchLut()) {
+                    mix(if (base.hasColorMatchLut()) base.matchColorAmount else 0f, target.matchColorAmount).coerceIn(0f, 100f)
+                } else target.matchColorAmount
             )
         }
     }
@@ -642,7 +721,14 @@ data class CopySettingsMask(
                 cgGlobalSat = src.cgGlobalSat,
                 cgGlobalLum = src.cgGlobalLum,
                 cgBlending = src.cgBlending,
-                cgBalance = src.cgBalance
+                cgBalance = src.cgBalance,
+                matchLutDim = src.matchLutDim,
+                matchLutData = src.matchLutData.copyOf(),
+                matchToneAmount = src.matchToneAmount,
+                matchColorAmount = src.matchColorAmount,
+                matchRawFlat = src.matchRawFlat,
+                matchPalette = src.matchPalette.copyOf(),
+                matchRefName = src.matchRefName
             )
         }
         if (detail) {

@@ -1336,7 +1336,12 @@ pub fn render_develop_canvas(app: &mut LightRawApp, ctx: &egui::Context, ui: &mu
                 Pos2::new(canvas_rect.center().x + 2.0, canvas_rect.min.y + 4.0),
                 Vec2::new(half_w, canvas_rect.height() - 8.0),
             );
-            if let Some(ref_tex) = app.get_photo_texture(ctx, ref_id, true) {
+            let ref_tex_opt = if app.external_reference_raw.is_some() {
+                app.ensure_external_reference_texture(ctx)
+            } else {
+                app.get_photo_texture(ctx, ref_id, true)
+            };
+            if let Some(ref_tex) = ref_tex_opt {
                 let rts = ref_tex.size_vec2();
                 let rsc = (l_box.width() / rts.x).min(l_box.height() / rts.y) * 0.94;
                 let d_l = Rect::from_center_size(l_box.center(), rts * rsc);
@@ -2767,27 +2772,46 @@ pub fn render_develop_toolbar(app: &mut LightRawApp, ui: &mut Ui) {
                 }
 
                 if app.before_after_mode == BeforeAfterMode::ReferenceView {
-                    let cur_ref = app
-                        .reference_photo_id
-                        .and_then(|id| app.photos.iter().find(|p| p.id == id))
-                        .map(|p| p.file_name.clone())
-                        .unwrap_or_else(|| "Select Reference".into());
+                    if ui.button("📂 Pick Ref...").clicked() {
+                        app.pick_external_reference_photo();
+                    }
+                    let cur_ref = if app.external_reference_raw.is_some() {
+                        app.external_reference_path
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("External Ref")
+                            .to_string()
+                    } else {
+                        app.reference_photo_id
+                            .and_then(|id| app.photos.iter().find(|p| p.id == id))
+                            .map(|p| p.file_name.clone())
+                            .unwrap_or_else(|| "Select Reference".into())
+                    };
                     egui::ComboBox::from_id_salt("ref_photo_picker")
                         .selected_text(format!("Ref: {}", cur_ref))
                         .width(150.0)
                         .show_ui(ui, |ui| {
                             for p in &app.photos {
                                 if ui
-                                    .selectable_label(app.reference_photo_id == Some(p.id), &p.file_name)
+                                    .selectable_label(
+                                        app.external_reference_raw.is_none()
+                                            && app.reference_photo_id == Some(p.id),
+                                        &p.file_name,
+                                    )
                                     .clicked()
                                 {
+                                    app.external_reference_path = None;
+                                    app.external_reference_raw = None;
+                                    app.external_reference_tex = None;
                                     app.reference_photo_id = Some(p.id);
                                 }
                             }
                         });
 
-                    let has_ref = app.reference_photo_id.is_some()
-                        && app.reference_photo_id != Some(app.active_photo_id);
+                    let has_ref = app.external_reference_raw.is_some()
+                        || (app.reference_photo_id.is_some()
+                            && app.reference_photo_id != Some(app.active_photo_id));
                     let match_btn = ui.add_enabled(
                         has_ref,
                         egui::Button::new(

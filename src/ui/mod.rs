@@ -359,6 +359,9 @@ pub struct LightRawApp {
     pub selected_photo_ids: Vec<i64>,
     pub compare_candidate_id: Option<i64>,
     pub reference_photo_id: Option<i64>,
+    pub external_reference_path: Option<PathBuf>,
+    pub external_reference_raw: Option<Arc<RawSourceImage>>,
+    pub external_reference_tex: Option<TextureHandle>,
     pub active_module: WorkspaceModule,
     pub library_view_mode: LibraryViewMode,
     pub selected_collection_id: Option<i64>,
@@ -558,6 +561,7 @@ pub struct LightRawApp {
     pub dev_history_open: bool,
     pub dev_collections_open: bool,
     pub dev_hist_open: bool,
+    pub dev_match_ref_open: bool,
     pub dev_basic_open: bool,
     pub dev_curve_open: bool,
     pub dev_hsl_open: bool,
@@ -835,6 +839,9 @@ impl LightRawApp {
             selected_photo_ids,
             compare_candidate_id: None,
             reference_photo_id: None,
+            external_reference_path: None,
+            external_reference_raw: None,
+            external_reference_tex: None,
             active_module: WorkspaceModule::Library,
             library_view_mode: LibraryViewMode::Grid,
             selected_collection_id: None,
@@ -1029,6 +1036,7 @@ impl LightRawApp {
             dev_history_open: false,
             dev_collections_open: false,
             dev_hist_open: true,
+            dev_match_ref_open: true,
             dev_basic_open: true,
             dev_curve_open: false,
             dev_hsl_open: false,
@@ -1847,6 +1855,9 @@ impl LightRawApp {
                 p.saturation_adjustment = [0.0; 8];
                 p.luminance_adjustment = [0.0; 8];
                 p.point_colors.clear();
+            }
+            "Match Reference" => {
+                p.clear_color_match_lut();
             }
             "Color Grading" => {
                 p.split_toning_shadow_saturation = 0.0;
@@ -2756,8 +2767,146 @@ impl LightRawApp {
         self.status_message = "Calculated scene Auto White Balance.".into();
     }
 
-    pub fn auto_match_color_to_reference(&mut self) {
+    pub fn pick_external_reference_photo(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Select Reference Image for Auto Color Match")
+            .add_filter(
+                "Images & RAW",
+                &[
+                    "jpg", "jpeg", "png", "webp", "tif", "tiff", "dng", "arw", "cr2", "cr3",
+                    "nef", "raf",
+                ],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        self.apply_external_reference_path(path, None);
+    }
+
+    pub fn apply_external_reference_path(&mut self, path: PathBuf, force_raw_flat: Option<bool>) {
+        let Some(raw) = decode_real_photo_file(&path, 512, 512) else {
+            self.status_message = format!(
+                "Could not decode reference image: {}",
+                path.display()
+            );
+            return;
+        };
+        self.external_reference_path = Some(path);
+        self.external_reference_raw = Some(Arc::new(raw));
+        self.external_reference_tex = None;
+        self.auto_match_color_with_mode(force_raw_flat);
+    }
+
+    pub fn clear_color_match_reference(&mut self) {
+        self.external_reference_path = None;
+        self.external_reference_raw = None;
+        self.external_reference_tex = None;
+        if !self.photos.is_empty() {
+            let mut p = self.active_photo().params.clone();
+            p.clear_color_match_lut();
+            self.commit_params_change("Clear Color Match", p);
+        }
+        self.status_message = "Cleared Reference Color Match.".into();
+    }
+
+    pub fn ensure_external_reference_texture(&mut self, ctx: &egui::Context) -> Option<TextureHandle> {
+        if let Some(ref tex) = self.external_reference_tex {
+            return Some(tex.clone());
+        }
+        let raw = self.external_reference_raw.as_ref()?;
+        let frame = render_develop_pipeline(
+            raw,
+            &DevelopParams::default(),
+            RenderOptions {
+                apply_crop: false,
+                is_draft_interactive: true,
+                ..RenderOptions::default()
+            },
+        );
+        let img = egui::ColorImage::from_rgba_unmultiplied(
+            [frame.width as usize, frame.height as usize],
+            &frame.rgba,
+        );
+        let tex = ctx.load_texture("ext_ref_tex", img, egui::TextureOptions::LINEAR);
+        self.external_reference_tex = Some(tex.clone());
+        Some(tex)
+    }
+
+    pub fn export_match_cube_file(&mut self) {
         if self.photos.is_empty() {
+            return;
+        }
+        let p = self.active_photo().params.clone();
+        let Some(cube_txt) = crate::ai::color_match::export_match_cube_lut(&p) else {
+            self.status_message = "Apply a Reference Color Match first before exporting a .cube LUT.".into();
+            return;
+        };
+        let default_name = if p.match_ref_name.trim().is_empty() {
+            "LightRaw_Match.cube".to_string()
+        } else {
+            format!(
+                "LightRaw_{}.cube",
+                p.match_ref_name
+                    .trim_end_matches(|c: char| c == '.' || c.is_alphanumeric())
+                    .trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            )
+        };
+        if let Some(dest) = rfd::FileDialog::new()
+            .set_title("Export Matched 3D LUT (.cube)")
+            .set_file_name(&default_name)
+            .add_filter("3D LUT", &["cube"])
+            .save_file()
+        {
+            match std::fs::write(&dest, cube_txt) {
+                Ok(_) => {
+                    self.status_message = format!("Exported 3D LUT: {}", dest.display());
+                }
+                Err(e) => {
+                    self.status_message = format!("Failed to export .cube LUT: {}", e);
+                }
+            }
+        }
+    }
+
+    pub fn auto_match_color_to_reference(&mut self) {
+        self.auto_match_color_with_mode(None);
+    }
+
+    pub fn auto_match_color_with_mode(&mut self, force_raw_flat: Option<bool>) {
+        if self.photos.is_empty() {
+            return;
+        }
+
+        let target_id = self.active_photo_id;
+        let Some(active_raw) = self.ensure_thumb_raw(target_id) else {
+            self.status_message = "Could not decode active image for color matching.".into();
+            return;
+        };
+        let target_params = self.active_photo().params.clone();
+
+        if let Some(ext_raw) = self.external_reference_raw.clone() {
+            let ref_name = self
+                .external_reference_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("External Reference")
+                .to_string();
+            let matched = crate::ai::color_match::match_color_and_tone_ex(
+                &ext_raw,
+                None,
+                &active_raw,
+                &target_params,
+                force_raw_flat,
+                &ref_name,
+            );
+            let step_desc = format!("Auto Match Color to {}", ref_name);
+            self.commit_params_change(&step_desc, matched);
+            self.status_message = format!(
+                "Matched tone, curve & color palette to reference: {}",
+                ref_name
+            );
             return;
         }
 
@@ -2775,17 +2924,14 @@ impl LightRawApp {
             });
 
         let Some(ref_id) = ref_id else {
-            self.status_message = "Please select or set a Reference Photo first.".into();
+            self.status_message = "Please pick or drop a Reference Photo first.".into();
             return;
         };
 
         self.reference_photo_id = Some(ref_id);
 
-        let ref_raw = self.ensure_thumb_raw(ref_id);
-        let active_raw = self.ensure_thumb_raw(self.active_photo_id);
-
-        let (Some(ref_raw), Some(active_raw)) = (ref_raw, active_raw) else {
-            self.status_message = "Could not decode reference or target image data for color matching.".into();
+        let Some(ref_raw) = self.ensure_thumb_raw(ref_id) else {
+            self.status_message = "Could not decode reference image data for color matching.".into();
             return;
         };
 
@@ -2797,18 +2943,21 @@ impl LightRawApp {
             .map(|p| p.file_name.clone())
             .unwrap_or_else(|| "Reference".into());
 
-        let target_params = self.active_photo().params.clone();
-
-        let matched = crate::ai::color_match::match_color_and_tone(
+        let matched = crate::ai::color_match::match_color_and_tone_ex(
             &ref_raw,
             ref_params.as_ref(),
             &active_raw,
             &target_params,
+            force_raw_flat,
+            &ref_name,
         );
 
         let step_desc = format!("Auto Match Color to {}", ref_name);
         self.commit_params_change(&step_desc, matched);
-        self.status_message = format!("⚡ Matched color, white balance & tone to reference: {}", ref_name);
+        self.status_message = format!(
+            "Matched tone, curve & color palette to reference: {}",
+            ref_name
+        );
     }
 
     pub fn save_xmp_sidecars_for_selection(&mut self) {
