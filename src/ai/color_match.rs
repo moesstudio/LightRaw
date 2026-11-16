@@ -656,8 +656,15 @@ fn sample_rendered_semantic_samples(
             out.bg.push((r, g, b));
         }
 
-        if fp == 1 && is_skin_srgb(r, g, b, true) {
-            strict_face_labs.push(srgb_to_oklab(r, g, b));
+        if fp == 1 {
+            let lab = srgb_to_oklab(r, g, b);
+            // Trust Hardware-AI FaceSkin contour even on cool/rosy Lightroom grades (`B >= G`, `b ~ 0.00`)
+            // while filtering dark hair/brows (`L <= 0.40`), cool glasses glare (`a <= 0.010`), and scarlet lips (`a >= 0.115`)
+            if lab.0 > 0.40 && lab.0 < 0.92 && lab.1 > 0.010 && lab.1 < 0.115 && lab.2 > -0.025 && lab.2 < 0.110 {
+                strict_face_labs.push(lab);
+            } else if is_skin_srgb(r, g, b, true) {
+                fallback_skin_labs.push(lab);
+            }
         } else if sw_eff >= 0.55 && is_skin_srgb(r, g, b, params.is_some()) {
             fallback_skin_labs.push(srgb_to_oklab(r, g, b));
         }
@@ -965,6 +972,28 @@ fn median_oklab(labs: &[(f32, f32, f32)]) -> Option<(f32, f32, f32)> {
     Some((ls[m], as_[m], bs[m]))
 }
 
+fn compute_all_is_log_flat(srgb: &[(f32, f32, f32)]) -> bool {
+    if srgb.is_empty() {
+        return false;
+    }
+    let mut ls = Vec::with_capacity(srgb.len());
+    let mut chroma_sq_sum = 0.0f64;
+    for &(r, g, b) in srgb {
+        let (l, a, okb) = srgb_to_oklab(r, g, b);
+        ls.push(l);
+        chroma_sq_sum += (a * a + okb * okb) as f64;
+    }
+    ls.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let chroma_rms = ((chroma_sq_sum / srgb.len().max(1) as f64).sqrt()) as f32;
+    let p05 = quantile_from_sorted(&ls, 0.05);
+    let p95 = quantile_from_sorted(&ls, 0.95);
+    let p99 = quantile_from_sorted(&ls, 0.99);
+    let spread = (p95 - p05).max(0.02);
+    chroma_rms < 0.032
+        || (chroma_rms < 0.052 && spread < 0.46 && p99 < 0.84)
+        || (chroma_rms < 0.052 && p05 > 0.25 && spread < 0.56)
+}
+
 /// Core Hardware-AI Semantic 3D LUT generator supporting `Unified`, `Subject` (face-anchored & white/black safe),
 /// and `Background` (backdrop gradient & vignette safe) color/tone transfer.
 fn build_match_3d_lut_for_role(
@@ -972,6 +1001,7 @@ fn build_match_3d_lut_for_role(
     tgt_srgb: &[(f32, f32, f32)],
     ref_skin_anchor: Option<(f32, f32, f32)>,
     tgt_skin_anchor: Option<(f32, f32, f32)>,
+    all_is_log_flat: bool,
     force_raw_flat: Option<bool>,
     role: RegionRole,
 ) -> (Vec<f32>, bool) {
@@ -983,16 +1013,31 @@ fn build_match_3d_lut_for_role(
     let mut ref_labs = Vec::with_capacity(ref_srgb.len());
     let mut ref_l_sorted = Vec::with_capacity(ref_srgb.len());
     let mut ref_dark_chromas = Vec::new();
+    let mut ref_dark_labs = Vec::new();
+    let mut ref_hi_neutral_labs = Vec::new();
     let mut ref_skin_l = Vec::new();
     let mut ref_skin_a_sum = 0.0f64;
     let mut ref_skin_b_sum = 0.0f64;
 
+    let mut ref_dark_labs_cool = Vec::new();
     for &(r, g, b) in ref_srgb {
         let (l, a, okb) = srgb_to_oklab(r, g, b);
+        let c = (a * a + okb * okb).sqrt();
         ref_labs.push((l, a, okb));
         ref_l_sorted.push(l);
         if l < 0.30 {
-            ref_dark_chromas.push((a * a + okb * okb).sqrt());
+            ref_dark_chromas.push(c);
+        }
+        // Prefer crisp neutral/cool dark hair over brown/warm trousers when available
+        if l > 0.16 && l < 0.42 && c < 0.055 && a <= 0.006 {
+            ref_dark_labs_cool.push((l, a, okb));
+        }
+        if l > 0.08 && l < 0.40 && c < 0.048 && a < 0.012 {
+            ref_dark_labs.push((l, a, okb));
+        }
+        // Only sample truly neutral white/grey highlights (exclude tan/beige/khaki shirts)
+        if l > 0.62 && c < 0.022 && a.abs() < 0.012 {
+            ref_hi_neutral_labs.push((l, a, okb));
         }
         if is_skin_srgb(r, g, b, false) {
             ref_skin_l.push(l);
@@ -1007,6 +1052,12 @@ fn build_match_3d_lut_for_role(
     } else {
         0.02
     };
+    let ref_dark_anchor = if ref_dark_labs_cool.len() >= 15 {
+        median_oklab(&ref_dark_labs_cool)
+    } else {
+        median_oklab(&ref_dark_labs)
+    };
+    let ref_hi_neutral_anchor = median_oklab(&ref_hi_neutral_labs);
 
     let mut tgt_l_sorted = Vec::with_capacity(tgt_srgb.len());
     let mut tgt_chroma_sq_sum = 0.0f64;
@@ -1018,33 +1069,45 @@ fn build_match_3d_lut_for_role(
     tgt_l_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let tgt_chroma_rms = ((tgt_chroma_sq_sum / tgt_srgb.len().max(1) as f64).sqrt()) as f32;
 
-    let tgt_p05 = quantile_from_sorted(&tgt_l_sorted, 0.05);
+    let _tgt_p05 = quantile_from_sorted(&tgt_l_sorted, 0.05);
     let tgt_p95 = quantile_from_sorted(&tgt_l_sorted, 0.95);
     let tgt_p99 = quantile_from_sorted(&tgt_l_sorted, 0.99);
-    let tgt_spread = (tgt_p95 - tgt_p05).max(0.02);
 
-    // Detect ACTUAL rendered LOG-flatness (developed ARW/CR3/NEF portraits with AdobeColor have wide spread
-    // and healthy chroma; genuine S-Log3 / V-Log / C-Log has either compressed contrast OR lifted gray blacks + low chroma)
-    let auto_is_log_flat = tgt_chroma_rms < 0.025
-        || (tgt_spread < 0.46 && tgt_p99 < 0.84)
-        || (tgt_p05 > 0.28 && tgt_spread < 0.55);
+    // Use whole-frame `all_is_log_flat` so cropping onto a uniform subject torso/face never false-triggers LOG mode.
+    let auto_is_log_flat = all_is_log_flat;
     let is_flat = force_raw_flat.unwrap_or(auto_is_log_flat);
     // Only apply strong De-Log chroma expansion when the target image genuinely has LOG-compressed low chroma!
     let log_chroma_need = if is_flat {
-        1.0 - smoothstep(0.018, 0.048, tgt_chroma_rms)
+        if auto_is_log_flat {
+            1.0 - smoothstep(0.018, 0.052, tgt_chroma_rms.min(0.040))
+        } else {
+            1.0 - smoothstep(0.018, 0.048, tgt_chroma_rms)
+        }
     } else {
         0.0
     };
 
     let mut tgt_labs = Vec::with_capacity(tgt_srgb.len());
     let mut tgt_skin_l = Vec::new();
+    let mut tgt_dark_labs = Vec::new();
+    let mut tgt_hi_neutral_labs = Vec::new();
     for &(r, g, b) in tgt_srgb {
         let (l, a, okb) = srgb_to_oklab(r, g, b);
+        let c = (a * a + okb * okb).sqrt();
         tgt_labs.push((l, a, okb));
+        if l > 0.08 && l < 0.40 && c < 0.055 {
+            tgt_dark_labs.push((l, a, okb));
+        }
+        if l > 0.56 && c < 0.042 && a < 0.018 {
+            tgt_hi_neutral_labs.push((l, a, okb));
+        }
         if is_skin_srgb(r, g, b, is_flat) {
             tgt_skin_l.push(l);
         }
     }
+    let tgt_dark_anchor = median_oklab(&tgt_dark_labs);
+    let tgt_hi_neutral_anchor = median_oklab(&tgt_hi_neutral_labs);
+    let tgt_hi_neutral_frac = tgt_hi_neutral_labs.len() as f32 / tgt_srgb.len().max(1) as f32;
 
     // --- Step 1: 256-entry Role-Aware Luminance Curve ---
     const L_BINS: usize = 256;
@@ -1092,11 +1155,20 @@ fn build_match_3d_lut_for_role(
         };
 
         let mut l_goal = if uniform_bg_backdrop {
-            // Smooth tapered mean-shift so studio backdrops match Ref brightness without crushing dark corners
-            // or edge-transition white highlights (`x > r50`) that create boundary halos around hair & sleeves.
-            let bell = smoothstep(0.04, 0.22, x) * (1.0 - smoothstep(0.58, 0.90, x));
-            let delta = (r50 - t50) * 0.92 * bell;
-            (x + delta).clamp(0.02, 0.98)
+            // Smooth compressed-vignette mean-shift so studio backdrops match Ref brightness evenly
+            // without crushing dark corners or dipping white sleeve/collar borders dark.
+            let lo_bell = smoothstep(0.03, 0.14, x);
+            let hi_fade = 1.0 - smoothstep((r50 + 0.08).max(0.64), 0.94, x);
+            let x_even = x + (t50 - x) * 0.42;
+            let l_even = (x_even + (r50 - t50) * 0.98).clamp(0.02, 0.97);
+            let shifted = x + (l_even - x) * lo_bell;
+            if x > t50 + 0.10 {
+                // Edge pixels brighter than the studio wall (e.g. white shirt anti-aliasing) blend smoothly above wall L
+                let l_hi_bridge = shifted.max(x + (r50 - t50).max(0.0) * 0.72).clamp(0.02, 0.96);
+                l_hi_bridge * hi_fade + x.max(shifted) * (1.0 - hi_fade)
+            } else {
+                shifted
+            }
         } else if preserve_subject_whites && x > 0.56 {
             let w_hi = smoothstep(0.56, 0.90, x);
             let kept_hi = x.max(l_cdf);
@@ -1122,7 +1194,7 @@ fn build_match_3d_lut_for_role(
         }
 
         let w_tone = if uniform_bg_backdrop {
-            0.90
+            0.94
         } else if x < t01 && auto_is_log_flat {
             1.0
         } else if is_flat {
@@ -1133,17 +1205,32 @@ fn build_match_3d_lut_for_role(
         l_raw[i] = x + (l_goal - x) * w_tone;
     }
 
-    // Hardware-AI Face Lightness Anchor on Subject: gently guide Target Face Lightness toward Reference Face Lightness
+    // Hardware-AI Face Lightness + Soft Shadow Anchor on Subject
     if role == RegionRole::Subject {
+        if !auto_is_log_flat {
+            if let (Some((r_dk_l, _, _)), Some((t_dk_l, _, _))) = (ref_dark_anchor, tgt_dark_anchor) {
+                let idx_dk = ((t_dk_l * (L_BINS - 1) as f32).round() as usize).min(L_BINS - 1);
+                let target_dk_l = r_dk_l.clamp(0.14, 0.38);
+                let cur_dk = l_raw[idx_dk];
+                let dk_delta = ((target_dk_l - cur_dk) * 0.85).clamp(-0.08, 0.11);
+                if dk_delta.abs() > 0.004 {
+                    for i in 0..L_BINS {
+                        let x = i as f32 / (L_BINS - 1) as f32;
+                        let w = (-((x - t_dk_l) / 0.12).powi(2)).exp() * smoothstep(0.06, 0.18, x);
+                        l_raw[i] = (l_raw[i] + dk_delta * w).clamp(0.0, 1.0);
+                    }
+                }
+            }
+        }
         if let (Some((r_sk_l, _, _)), Some((t_sk_l, _, _))) = (ref_skin_anchor, tgt_skin_anchor) {
             let idx = ((t_sk_l * (L_BINS - 1) as f32).round() as usize).min(L_BINS - 1);
-            let target_sk_l = t_sk_l + (r_sk_l - t_sk_l) * 0.72;
+            let target_sk_l = t_sk_l + (r_sk_l - t_sk_l) * 0.88;
             let cur_mapped = l_raw[idx];
             let delta = (target_sk_l - cur_mapped).clamp(-0.18, 0.18);
             for i in 0..L_BINS {
                 let x = i as f32 / (L_BINS - 1) as f32;
-                let w = (-((x - t_sk_l) / 0.14).powi(2)).exp();
-                l_raw[i] = (l_raw[i] + delta * w * 0.75).clamp(0.0, 1.0);
+                let w = (-((x - t_sk_l) / 0.18).powi(2)).exp();
+                l_raw[i] = (l_raw[i] + delta * w * 0.86).clamp(0.0, 1.0);
             }
         }
     } else if tgt_skin_l.len() >= 20 {
@@ -1303,8 +1390,44 @@ fn build_match_3d_lut_for_role(
         t_mats[z] = compute_mk_2x2(taa, tab, tbb, raa, rab, rbb, eps_t, eps_r, min_gain, max_gain);
     }
 
-    // Detect clean neutral-black portrait references (like studio uniform/school portraits)
-    // vs cinema film grades whose shadows carry explicit blue/olive tint.
+    // On uniform studio backdrops, stabilize high-lightness zones (Z5..Z7, which may be empty or contaminated
+    // by a bottom brick/floor strip) toward the dominant studio wall zone so anti-aliased bright sleeve edges
+    // never pick up floor/brick warmth or create a dark moat line.
+    let bg_dom_z = if uniform_bg_backdrop {
+        (0..ZONES)
+            .max_by(|&a, &b| r_zones[a].w_sum.partial_cmp(&r_zones[b].w_sum).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(3)
+    } else {
+        0
+    };
+    let bg_dom_w = r_zones[bg_dom_z].w_sum.max(1e-4);
+    if uniform_bg_backdrop {
+        let wall_mu_t = mu_t[bg_dom_z];
+        let wall_mu_r = mu_r[bg_dom_z];
+        let wall_mat = t_mats[bg_dom_z];
+        for z in 0..ZONES {
+            if z > bg_dom_z && r_zones[z].w_sum < bg_dom_w * 0.35 {
+                let blend = (1.0 - (r_zones[z].w_sum / (bg_dom_w * 0.35)) as f32).clamp(0.0, 1.0);
+                mu_t[z] = (
+                    mu_t[z].0 + (wall_mu_t.0 - mu_t[z].0) * blend,
+                    mu_t[z].1 + (wall_mu_t.1 - mu_t[z].1) * blend,
+                );
+                mu_r[z] = (
+                    mu_r[z].0 + (wall_mu_r.0 - mu_r[z].0) * blend,
+                    mu_r[z].1 + (wall_mu_r.1 - mu_r[z].1) * blend,
+                );
+                t_mats[z] = Mat2 {
+                    m00: t_mats[z].m00 + (wall_mat.m00 - t_mats[z].m00) * blend,
+                    m01: t_mats[z].m01 + (wall_mat.m01 - t_mats[z].m01) * blend,
+                    m10: t_mats[z].m10 + (wall_mat.m10 - t_mats[z].m10) * blend,
+                    m11: t_mats[z].m11 + (wall_mat.m11 - t_mats[z].m11) * blend,
+                };
+            }
+        }
+    }
+
+    // Detect clean neutral-black portrait references vs cinema grades, AND compute Reference Illuminant
+    // Mood + White Shirt Headroom Lift when Target wears bright white fabrics against a non-white Subject Ref.
     let is_clean_neutral_subject = role == RegionRole::Subject && ref_dark_chroma_med < 0.024 && log_chroma_need < 0.3;
 
     let has_tgt_skin = tgt_skin_anchor.is_some() || tgt_skin_l.len() >= 20;
@@ -1317,6 +1440,40 @@ fn build_match_3d_lut_for_role(
         ))
     } else {
         None
+    };
+
+    // Derive clean Illuminant Mood (cool studio / warm daylight / neutral) without borrowing Ref clothing dye
+    let (illum_a, illum_b) = if role == RegionRole::Subject && !auto_is_log_flat {
+        let dk_a = ref_dark_anchor.map(|v| v.1).unwrap_or(0.0);
+        let dk_b = ref_dark_anchor.map(|v| v.2).unwrap_or(0.0);
+        let skin_db = match (ref_skin_anchor, tgt_skin_anchor) {
+            (Some((_, _, rb)), Some((_, _, tb))) => (rb - tb).clamp(-0.08, 0.08),
+            _ => 0.0,
+        };
+        let skin_da = match (ref_skin_anchor, tgt_skin_anchor) {
+            (Some((_, ra, _)), Some((_, ta, _))) => (ra - ta).clamp(-0.04, 0.04),
+            _ => 0.0,
+        };
+        if let Some((_, ha, hb)) = ref_hi_neutral_anchor {
+            (
+                (ha * 0.65 + (dk_a * 0.30 + skin_da * 0.25) * 0.35).clamp(-0.015, 0.012),
+                (hb * 0.65 + (dk_b * 0.40 + skin_db * 0.30) * 0.35).clamp(-0.032, 0.016),
+            )
+        } else {
+            (
+                (dk_a * 0.55 + skin_da * 0.25).clamp(-0.016, 0.010),
+                (dk_b * 0.58 + skin_db * 0.34).clamp(-0.034, 0.015),
+            )
+        }
+    } else {
+        (0.0, 0.0)
+    };
+    let enable_clean_white_lift = role == RegionRole::Subject && !auto_is_log_flat && tgt_hi_neutral_frac >= 0.05;
+    let white_shirt_hi_cap = if enable_clean_white_lift {
+        let ref_sk_l = ref_skin_anchor.map(|v| v.0).unwrap_or(r95);
+        (ref_sk_l + 0.24).clamp(0.90, 0.95)
+    } else {
+        0.92
     };
 
     // --- Step 3: Populate 25x25x25 3D LUT ---
@@ -1332,7 +1489,7 @@ fn build_match_3d_lut_for_role(
             for ri in 0..dim {
                 let r = ri as f32 / denom;
                 let (l_in, a_in, b_in) = srgb_to_oklab(r, g, b);
-                let l_out = eval_l_map(l_in);
+                let mut l_out = eval_l_map(l_in);
                 let c_in = (a_in * a_in + b_in * b_in).sqrt();
 
                 let mut w = [0.0f32; ZONES];
@@ -1351,7 +1508,7 @@ fn build_match_3d_lut_for_role(
                     let (ta_center, tb_center) = mu_t[z];
 
                     // On clean studio/portrait Subject: do NOT let a colored garment (e.g. khaki shirt)
-                    // paint pure black hair cyan/brown, or paint white shirts tan, or stain grey trousers!
+                    // paint black hair, grey trousers, or white shirts tan/brown.
                     if is_clean_neutral_subject {
                         let neutral_protect = 1.0 - smoothstep(0.015, 0.055, c_in);
                         let white_guard = smoothstep(0.68, 0.90, l_out);
@@ -1400,6 +1557,12 @@ fn build_match_3d_lut_for_role(
                     b_mk += wz * zone_b;
                 }
 
+                // Keep desaturated highlight boundary pixels on studio backdrops lifted cleanly toward white
+                if role == RegionRole::Background && !auto_is_log_flat && l_in > 0.56 && c_in < 0.048 {
+                    let w_edge_white = smoothstep(0.54, 0.70, l_in) * (1.0 - smoothstep(0.020, 0.048, c_in));
+                    l_out = (l_out + (0.85 - l_out).max(0.0) * w_edge_white * 0.75).min(0.95);
+                }
+
                 // Pure specular white highlight guard so crisp white fabrics stay clean
                 if l_out > 0.76 && c_in < 0.035 {
                     let hi_guard = smoothstep(0.76, 0.95, l_out) * (1.0 - smoothstep(0.01, 0.035, c_in));
@@ -1407,25 +1570,63 @@ fn build_match_3d_lut_for_role(
                     b_mk *= 1.0 - hi_guard * 0.60;
                 }
 
-                // Hardware-AI Face Skin Matching & Anti-Green Safety ONLY on unambiguous face/skin pixels
+                // Hardware-AI Neutral Dark Hair Mood & Clean White Shirt Headroom/Illuminant Correction on Subject
                 let (mut a_out, mut b_out) = (a_mk, b_mk);
-                if has_tgt_skin && a_in > 0.0068 && b_in > -0.001 && l_in > 0.32 && l_in < 0.96 {
+                if role == RegionRole::Subject && !auto_is_log_flat {
+                    // 1. Hair / Neutral Shadow Tint from Reference's own neutral darks (e.g. cool slate hair in Lightroom)
+                    if let Some((_, dka, dkb)) = ref_dark_anchor {
+                        let w_dk_neutral = smoothstep(0.06, 0.16, l_in)
+                            * (1.0 - smoothstep(0.32, 0.48, l_in))
+                            * (1.0 - smoothstep(0.018, 0.055, c_in));
+                        if w_dk_neutral > 0.02 {
+                            let goal_dk_a = dka.clamp(-0.014, 0.010) * 0.72;
+                            let goal_dk_b = dkb.clamp(-0.032, 0.014) * 0.72;
+                            a_out += (goal_dk_a - a_out) * w_dk_neutral * 0.82;
+                            b_out += (goal_dk_b - b_out) * w_dk_neutral * 0.82;
+                        }
+                    }
+                    // 2. Clean Neutral White Shirt & Highlight Illuminant Mood (removes purple/magenta/yellow RAW cast + lifts crushed whites above skin)
+                    let w_white = smoothstep(0.48, 0.64, l_in)
+                        * (1.0 - smoothstep(0.020, 0.048, c_in))
+                        * (1.0 - smoothstep(0.007, 0.020, a_in));
+                    if w_white > 0.02 {
+                        // De-cast residual target tint & apply Ref illuminant mood
+                        let target_rel_a = tgt_hi_neutral_anchor.map(|v| v.1).unwrap_or(0.0);
+                        let target_rel_b = tgt_hi_neutral_anchor.map(|v| v.2).unwrap_or(0.0);
+                        let clean_a = (a_in - target_rel_a) * 0.35 + illum_a;
+                        let clean_b = (b_in - target_rel_b) * 0.45 + illum_b;
+                        a_out += (clean_a - a_out) * w_white * 0.88;
+                        b_out += (clean_b - b_out) * w_white * 0.88;
+                        if enable_clean_white_lift {
+                            // Soft fill-light shoulder mapping white shirt range [0.50..0.90] cleanly above skin (0.82..0.94)
+                            let t_sh = smoothstep(0.46, 0.88, l_in).powf(0.62);
+                            let target_l = (0.58 + t_sh * (white_shirt_hi_cap - 0.58)).max(l_out).min(0.95);
+                            let hi_ramp = smoothstep(0.50, 0.66, l_in);
+                            l_out = (l_out + (target_l - l_out) * w_white * hi_ramp * 0.90).min(0.96);
+                        }
+                    }
+                }
+
+                // Hardware-AI Face Skin Matching & Anti-Green Safety ONLY on unambiguous face/skin pixels
+                if has_tgt_skin && a_in > 0.0068 && b_in > -0.001 && l_in > 0.30 && l_in < 0.96 {
                     let ang_in = b_in.atan2(a_in);
-                    if ang_in > 0.12 && ang_in < 0.96 {
-                        let w_sk = smoothstep(0.0068, 0.014, a_in)
-                            * smoothstep(0.32, 0.50, l_in)
+                    if ang_in > 0.10 && ang_in < 0.98 {
+                        let w_sk = smoothstep(0.0068, 0.013, a_in)
+                            * smoothstep(0.30, 0.48, l_in)
                             * (1.0 - smoothstep(0.88, 0.97, l_in))
-                            * (1.0 - smoothstep(0.72, 0.96, ang_in));
+                            * (1.0 - smoothstep(0.72, 0.98, ang_in));
                         if w_sk > 0.02 {
+                            let ref_wants_cool_skin = ref_skin_anchor.is_some_and(|v| v.2 < 0.022);
+                            let safe_b_min = if ref_wants_cool_skin { 0.002 } else { 0.008 };
                             // If Hardware AI detected direct face skin in BOTH Subject and Reference, steer directly toward Ref skin!
                             if role == RegionRole::Subject {
                                 if let (Some((_, ra, rb)), Some((_, ta_sk, tb_sk))) = (ref_skin_anchor, tgt_skin_anchor) {
                                     let dist_sk = ((a_in - ta_sk).powi(2) + (b_in - tb_sk).powi(2)).sqrt();
-                                    let w_direct = w_sk * (1.0 - smoothstep(0.025, 0.085, dist_sk));
-                                    let goal_a = (a_in + (ra - ta_sk) * 0.85).clamp(0.018, 0.075);
-                                    let goal_b = (b_in + (rb - tb_sk) * 0.85).clamp(0.008, 0.095);
-                                    a_out += (goal_a - a_out) * w_direct * 0.82;
-                                    b_out += (goal_b - b_out) * w_direct * 0.82;
+                                    let w_direct = w_sk * (1.0 - smoothstep(0.032, 0.115, dist_sk));
+                                    let goal_a = (a_in + (ra - ta_sk) * 0.92).clamp(0.018, 0.075);
+                                    let goal_b = (b_in + (rb - tb_sk) * 0.92).clamp(safe_b_min, 0.095);
+                                    a_out += (goal_a - a_out) * w_direct * 0.90;
+                                    b_out += (goal_b - b_out) * w_direct * 0.90;
                                 }
                             }
                             let min_a = if let Some((ra, _)) = ref_skin_mean {
@@ -1436,8 +1637,8 @@ fn build_match_3d_lut_for_role(
                             if a_out < min_a {
                                 a_out += (min_a - a_out) * w_sk * 0.85;
                             }
-                            if b_out < 0.008 {
-                                b_out += (0.011 - b_out) * w_sk * 0.75;
+                            if b_out < safe_b_min {
+                                b_out += ((safe_b_min + 0.002) - b_out) * w_sk * 0.75;
                             }
                             let c_sk = (a_out * a_out + b_out * b_out).sqrt();
                             if c_sk > 0.100 {
@@ -1495,6 +1696,7 @@ pub fn match_color_and_tone_ex(
 
     let ref_skin_anchor = median_oklab(&ref_sem.skin_labs);
     let tgt_skin_anchor = median_oklab(&tgt_sem.skin_labs);
+    let all_is_log_flat = compute_all_is_log_flat(&tgt_sem.all);
 
     // Enable Hardware-AI Subject/Background Split LUT when both photos clearly separate foreground & backdrop
     let has_semantic_split = ref_sem.subj_frac >= 0.08
@@ -1513,6 +1715,7 @@ pub fn match_color_and_tone_ex(
             &tgt_sem.subj,
             ref_skin_anchor,
             tgt_skin_anchor,
+            all_is_log_flat,
             force_raw_flat,
             RegionRole::Subject,
         );
@@ -1521,6 +1724,7 @@ pub fn match_color_and_tone_ex(
             &tgt_sem.bg,
             None,
             None,
+            all_is_log_flat,
             force_raw_flat,
             RegionRole::Background,
         );
@@ -1531,6 +1735,7 @@ pub fn match_color_and_tone_ex(
             &tgt_sem.all,
             ref_skin_anchor,
             tgt_skin_anchor,
+            all_is_log_flat,
             force_raw_flat,
             RegionRole::Unified,
         );
