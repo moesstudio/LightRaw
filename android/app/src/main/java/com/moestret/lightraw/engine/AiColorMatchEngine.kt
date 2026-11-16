@@ -2,7 +2,6 @@ package com.moestret.lightraw.engine
 
 import android.graphics.Bitmap
 import com.moestret.lightraw.model.DevelopParams
-import com.moestret.lightraw.model.WhiteBalanceMode
 import kotlin.math.atan2
 import kotlin.math.cbrt
 import kotlin.math.cos
@@ -17,12 +16,13 @@ import kotlin.math.sqrt
 
 /**
  * LightRaw AI Color Match & Auto Tone Engine (Mobile Twin of `src/ai/color_match.rs`).
- * Computes perceptual OKLab Luminance-CDF + 5-zone 2x2 Monge-Kantorovich color transfer
- * encoded as a smooth 17x17x17 3D LUT with live `Tonal %` & `Warna %` sliders and skin protection.
+ * Computes perceptual OKLab Luminance-CDF (with highlight rolloff protection) + 8-zone
+ * median-anchored 2x2 Monge-Kantorovich chromatic covariance transport encoded as a smooth
+ * 25x25x25 3D LUT with neutral stability, deep-shadow & highlight restraint, and face safety.
  */
 object AiColorMatchEngine {
 
-    const val MATCH_LUT_DIM = 17
+    const val MATCH_LUT_DIM = 25
 
     data class ColorStats(
         val p05Lum: Float,
@@ -446,21 +446,41 @@ object AiColorMatchEngine {
         return Mat2(d1 * c2 + d2 * s2, (d1 - d2) * cs, (d1 - d2) * cs, d1 * s2 + d2 * c2)
     }
 
+    private fun weightedMedian(vals: ArrayList<Float>, weights: ArrayList<Float>): Float {
+        if (vals.isEmpty()) return 0f
+        val idx = IntArray(vals.size) { it }.sortedBy { vals[it] }
+        var totalW = 0.0
+        for (k in idx) totalW += weights[k]
+        if (totalW <= 1e-6) return vals[idx[idx.size / 2]]
+        val half = 0.5 * totalW
+        var acc = 0.0
+        for (k in idx) {
+            acc += weights[k]
+            if (acc >= half) return vals[k]
+        }
+        return vals[idx.last()]
+    }
+
     private fun computeMk2x2(
         taa: Float, tab: Float, tbb: Float,
         raa: Float, rab: Float, rbb: Float,
-        eps: Float, maxGain: Float
+        epsT: Float, epsR: Float,
+        minGain: Float, maxGain: Float
     ): Mat2 {
-        val et = eigenSym2x2(taa + eps, tab, tbb + eps)
+        val et = eigenSym2x2(taa + epsT, tab, tbb + epsT)
         val sqrtT = reconstructSym2x2(et[0], et[1], sqrt(et[2]), sqrt(et[3]))
         val invSqrtT = reconstructSym2x2(et[0], et[1], 1f / sqrt(et[2]), 1f / sqrt(et[3]))
-        val sigR = Mat2(raa + eps, rab, rab, rbb + eps)
+        val sigR = Mat2(raa + epsR, rab, rab, rbb + epsR)
         val inner = sqrtT.mul(sigR).mul(sqrtT)
         val ep = eigenSym2x2(inner.m00, 0.5f * (inner.m01 + inner.m10), inner.m11)
         val sqrtInner = reconstructSym2x2(ep[0], ep[1], sqrt(ep[2]), sqrt(ep[3]))
         val tMat = invSqrtT.mul(sqrtInner).mul(invSqrtT)
         val em = eigenSym2x2(tMat.m00, 0.5f * (tMat.m01 + tMat.m10), tMat.m11)
-        return reconstructSym2x2(em[0], em[1], em[2].coerceIn(0.35f, maxGain), em[3].coerceIn(0.35f, maxGain))
+        return reconstructSym2x2(
+            em[0], em[1],
+            em[2].coerceIn(minGain, maxGain),
+            em[3].coerceIn(minGain, maxGain)
+        )
     }
 
     private fun buildMatchLutFromPixels(
@@ -529,11 +549,9 @@ object AiColorMatchEngine {
         val tgtP05 = quantileFromSorted(tgtLSorted, 0.05f)
         val tgtP95 = quantileFromSorted(tgtLSorted, 0.95f)
         val tgtSpread = max(0.02f, tgtP95 - tgtP05)
-        val isFlat = forceRawFlat ?: (tgtSpread < 0.48f || tgtP05 > 0.13f)
+        val isFlat = forceRawFlat ?: (tgtSpread < 0.48f || tgtP05 > 0.14f)
 
         val tgtSkinL = ArrayList<Float>()
-        var tgtSkinASum = 0.0
-        var tgtSkinBSum = 0.0
         var skIdx = 0
         i = 0
         while (i < tgtPixels.size && skIdx < tgtN) {
@@ -543,82 +561,112 @@ object AiColorMatchEngine {
             val b = (c and 0xFF) / 255f
             if (isSkinSrgb(r, g, b, isFlat)) {
                 tgtSkinL.add(tgtLabs[skIdx * 3])
-                tgtSkinASum += tgtLabs[skIdx * 3 + 1]
-                tgtSkinBSum += tgtLabs[skIdx * 3 + 2]
             }
             i += stepT
             skIdx++
         }
 
-        // Step 1: 65-entry Smooth Luminance CDF Curve
-        val lBins = 65
-        val lMap = FloatArray(lBins)
+        // Step 1: 256-entry Smooth Filmic Histogram CDF Luminance Curve
+        val lBins = 256
+        val lRaw = FloatArray(lBins)
+        val t005 = quantileFromSorted(tgtLSorted, 0.005f)
         val t01 = quantileFromSorted(tgtLSorted, 0.01f)
         val t99 = quantileFromSorted(tgtLSorted, 0.99f)
+        val t995 = quantileFromSorted(tgtLSorted, 0.995f)
         val r01 = quantileFromSorted(refLSorted, 0.01f)
+        val r05 = quantileFromSorted(refLSorted, 0.05f)
+        val r92 = quantileFromSorted(refLSorted, 0.92f)
         val r99 = quantileFromSorted(refLSorted, 0.99f)
-        val cdfStrength = if (isFlat) 0.92f else 0.85f
+        val spanT = max(0.08f, t995 - t005)
 
         for (bin in 0 until lBins) {
             val x = bin.toFloat() / (lBins - 1)
             val q = cdfRank(tgtLSorted, x)
-            val lRef = when {
+            val lNorm = ((x - t005) / spanT).coerceIn(0f, 1f)
+            val lCdf = when {
                 x < t01 -> {
-                    val k = (x / max(0.02f, t01)).coerceIn(0f, 1f)
-                    val targetLo = min(0.04f, r01 * 0.72f)
-                    targetLo + (r01 - targetLo) * k
+                    val k = (x / max(0.015f, t01)).coerceIn(0f, 1f)
+                    val kSmooth = k * k * (3f - 2f * k)
+                    val targetLo = min(0.035f, r01 * 0.55f)
+                    targetLo + (r01 - targetLo) * kSmooth
                 }
                 x > t99 -> {
-                    val k = ((x - t99) / max(0.02f, 1f - t99)).coerceIn(0f, 1f)
-                    val targetHi = max(0.90f, r99)
-                    r99 + (targetHi - r99) * k
+                    val k = ((x - t99) / max(0.015f, 1f - t99)).coerceIn(0f, 1f)
+                    val kSmooth = k * k * (3f - 2f * k)
+                    val targetHi = max(0.92f, r99)
+                    r99 + (targetHi - r99) * kSmooth
                 }
                 else -> quantileFromSorted(refLSorted, q)
             }
-            lMap[bin] = x + (lRef - x) * cdfStrength
+
+            val lGoal = when {
+                !isFlat -> {
+                    val hiW = 0.42f * q * q * q
+                    val airy = max(lCdf, lNorm * 0.95f + 0.04f)
+                    lCdf + (airy - lCdf) * hiW
+                }
+                r92 < 0.62f -> {
+                    val hiW = 0.36f * q * q
+                    val airy = max(lCdf, lNorm * 0.78f + 0.05f)
+                    lCdf + (airy - lCdf) * hiW
+                }
+                lCdf > 0.70f -> {
+                    val over = lCdf - 0.70f
+                    0.70f + over / (1f + over * 1.95f)
+                }
+                else -> lCdf
+            }
+
+            val wTone = when {
+                x < t01 -> 1f
+                isFlat -> 0.99f
+                else -> 0.95f
+            }
+            lRaw[bin] = x + (lGoal - x) * wTone
         }
 
         if (tgtSkinL.size >= 20) {
             tgtSkinL.sort()
             val tSkinMed = tgtSkinL[tgtSkinL.size / 2]
             val idx = (tSkinMed * (lBins - 1)).roundToInt().coerceIn(0, lBins - 1)
-            val mappedSkin = lMap[idx]
-            val floorSkin = if (refSkinL.size >= 20) {
-                refSkinL.sort()
-                val rSkinMed = refSkinL[refSkinL.size / 2]
-                rSkinMed.coerceIn(0.44f, 0.80f) * 0.6f + tSkinMed.coerceIn(0.46f, 0.80f) * 0.4f
-            } else {
-                (tSkinMed * 0.82f).coerceIn(0.46f, 0.76f)
-            }
-            if (mappedSkin < floorSkin) {
-                val lift = floorSkin - mappedSkin
-                val ceilGuard = min(0.94f, max(floorSkin + 0.06f, r99))
+            if (lRaw[idx] < 0.34f) {
+                val lift = 0.34f - lRaw[idx]
                 for (bin in 0 until lBins) {
                     val x = bin.toFloat() / (lBins - 1)
-                    val dx = (x - tSkinMed) / 0.16f
+                    val dx = (x - tSkinMed) / 0.14f
                     val w = exp(-(dx * dx))
-                    val lifted = min(ceilGuard, lMap[bin] + lift * w * 0.88f)
-                    if (lifted > lMap[bin]) lMap[bin] = lifted
+                    lRaw[bin] = min(0.86f, lRaw[bin] + lift * w * 0.68f)
                 }
             }
         }
 
-        val minStep = 0.25f / (lBins - 1)
-        val maxStep = (if (isFlat) 3.1f else 2.2f) / (lBins - 1)
-        val prev = FloatArray(lBins)
-        repeat(4) {
-            lMap.copyInto(prev)
-            for (bin in 1 until lBins - 1) {
-                lMap[bin] = 0.22f * prev[bin - 1] + 0.56f * prev[bin] + 0.22f * prev[bin + 1]
+        // Gaussian smoothing (sigma = 5.5 bins) prevents staircase banding while keeping crisp tone
+        val lMap = FloatArray(lBins)
+        val gSigma = 5.5f
+        val gRad = 14
+        for (bin in 0 until lBins) {
+            var wSum = 0f
+            var vSum = 0f
+            for (d in -gRad..gRad) {
+                val j = (bin + d).coerceIn(0, lBins - 1)
+                val x = d / gSigma
+                val w = exp(-(x * x) * 0.5f)
+                wSum += w
+                vSum += w * lRaw[j]
             }
+            lMap[bin] = vSum / wSum
         }
-        lMap[0] = lMap[0].coerceIn(0f, 0.12f)
+
+        val minStep = 0.04f / (lBins - 1)
+        val maxStep = (if (isFlat) 4.8f else 3.2f) / (lBins - 1)
+        val startLo = (r05 * 0.45f).coerceIn(0f, 0.09f)
+        lMap[0] = lMap[0].coerceIn(0f, max(0.03f, startLo))
         for (bin in 1 until lBins) {
             val hi = min(1f, lMap[bin - 1] + maxStep)
             val lo = min(hi, lMap[bin - 1] + minStep)
             lMap[bin] = lMap[bin].coerceIn(lo, hi)
         }
-        lMap[lBins - 1] = lMap[lBins - 1].coerceIn(0.86f, 1f)
+        lMap[lBins - 1] = if (t005 > 0.15f) lMap[lBins - 1].coerceIn(0.78f, 1f) else lMap[lBins - 1].coerceIn(0.86f, 1f)
 
         fun evalLMap(v: Float): Float {
             val f = (v.coerceIn(0f, 1f) * (lBins - 1)).coerceIn(0f, (lBins - 1).toFloat())
@@ -628,15 +676,18 @@ object AiColorMatchEngine {
             return lMap[i0] * (1f - frac) + lMap[i1] * frac
         }
 
-        // Step 2: 5-Zone OKLab Mean + 2x2 Covariance Transfer
-        val zones = 5
-        val centers = floatArrayOf(0.10f, 0.30f, 0.50f, 0.70f, 0.90f)
-        val zoneSigma = 0.21f
+        // Step 2: 8-Zone Weighted-Median Atmospheric Anchor + Noise-Safe Covariance Transfer
+        val zones = 8
+        val centers = floatArrayOf(0.06f, 0.18f, 0.30f, 0.42f, 0.54f, 0.66f, 0.78f, 0.90f)
+        val zoneSigma = 0.13f
 
         val tW = DoubleArray(zones); val tA = DoubleArray(zones); val tB = DoubleArray(zones)
         val tAA = DoubleArray(zones); val tAB = DoubleArray(zones); val tBB = DoubleArray(zones)
         val rW = DoubleArray(zones); val rA = DoubleArray(zones); val rB = DoubleArray(zones)
         val rAA = DoubleArray(zones); val rAB = DoubleArray(zones); val rBB = DoubleArray(zones)
+        val rASamples = Array(zones) { ArrayList<Float>() }
+        val rBSamples = Array(zones) { ArrayList<Float>() }
+        val rWSamples = Array(zones) { ArrayList<Float>() }
 
         for (p in 0 until tgtN) {
             val lEff = evalLMap(tgtLabs[p * 3])
@@ -645,7 +696,7 @@ object AiColorMatchEngine {
             for (z in 0 until zones) {
                 val dx = (lEff - centers[z]) / zoneSigma
                 val w = exp(-(dx * dx)).toDouble()
-                if (w > 0.01) {
+                if (w > 0.008) {
                     tW[z] += w; tA[z] += w * a; tB[z] += w * b
                     tAA[z] += w * a * a; tAB[z] += w * a * b; tBB[z] += w * b * b
                 }
@@ -653,20 +704,24 @@ object AiColorMatchEngine {
         }
         for (p in 0 until refN) {
             val l = refLabs[p * 3]
-            val a = refLabs[p * 3 + 1].toDouble()
-            val b = refLabs[p * 3 + 2].toDouble()
+            val af = refLabs[p * 3 + 1]
+            val bf = refLabs[p * 3 + 2]
+            val a = af.toDouble()
+            val b = bf.toDouble()
             for (z in 0 until zones) {
                 val dx = (l - centers[z]) / zoneSigma
-                val w = exp(-(dx * dx)).toDouble()
-                if (w > 0.01) {
+                val wf = exp(-(dx * dx))
+                val w = wf.toDouble()
+                if (w > 0.008) {
                     rW[z] += w; rA[z] += w * a; rB[z] += w * b
                     rAA[z] += w * a * a; rAB[z] += w * a * b; rBB[z] += w * b * b
+                    rASamples[z].add(af); rBSamples[z].add(bf); rWSamples[z].add(wf)
                 }
             }
         }
 
-        val eps = if (isFlat) 0.00022f else 0.00042f
-        val maxGain = if (isFlat) 2.65f else 1.90f
+        val maxGain = if (isFlat) 1.85f else 1.60f
+        val minGain = 0.35f
         val muTa = FloatArray(zones); val muTb = FloatArray(zones)
         val muRa = FloatArray(zones); val muRb = FloatArray(zones)
         val tMats = Array(zones) { Mat2(1f, 0f, 0f, 1f) }
@@ -676,39 +731,36 @@ object AiColorMatchEngine {
                 val ma = (tA[z] / tW[z]).toFloat(); val mb = (tB[z] / tW[z]).toFloat()
                 floatArrayOf(
                     ma, mb,
-                    max(1e-6f, (tAA[z] / tW[z]).toFloat() - ma * ma),
+                    max(1e-7f, (tAA[z] / tW[z]).toFloat() - ma * ma),
                     (tAB[z] / tW[z]).toFloat() - ma * mb,
-                    max(1e-6f, (tBB[z] / tW[z]).toFloat() - mb * mb)
+                    max(1e-7f, (tBB[z] / tW[z]).toFloat() - mb * mb)
                 )
             } else floatArrayOf(0f, 0f, 0.0005f, 0f, 0.0005f)
 
             val (ra, rb, raa, rab, rbb) = if (rW[z] > 1e-4) {
-                val ma = (rA[z] / rW[z]).toFloat(); val mb = (rB[z] / rW[z]).toFloat()
+                val rawMa = (rA[z] / rW[z]).toFloat(); val rawMb = (rB[z] / rW[z]).toFloat()
+                val ma = if (rASamples[z].isNotEmpty()) weightedMedian(rASamples[z], rWSamples[z]) * 0.90f + rawMa * 0.10f else rawMa
+                val mb = if (rBSamples[z].isNotEmpty()) weightedMedian(rBSamples[z], rWSamples[z]) * 0.90f + rawMb * 0.10f else rawMb
                 floatArrayOf(
                     ma, mb,
-                    max(1e-6f, (rAA[z] / rW[z]).toFloat() - ma * ma),
-                    (rAB[z] / rW[z]).toFloat() - ma * mb,
-                    max(1e-6f, (rBB[z] / rW[z]).toFloat() - mb * mb)
+                    max(1e-7f, (rAA[z] / rW[z]).toFloat() - rawMa * rawMa),
+                    (rAB[z] / rW[z]).toFloat() - rawMa * rawMb,
+                    max(1e-7f, (rBB[z] / rW[z]).toFloat() - rawMb * rawMb)
                 )
             } else floatArrayOf(0f, 0f, 0.0005f, 0f, 0.0005f)
 
             muTa[z] = ta; muTb[z] = tb
             muRa[z] = ra; muRb[z] = rb
-            tMats[z] = computeMk2x2(taa, tab, tbb, raa, rab, rbb, eps, maxGain)
+            val epsT = if (isFlat) max(1.2e-4f, (taa + tbb) * 0.30f) else max(1.5e-4f, (taa + tbb) * 0.40f)
+            val epsR = max(6.0e-5f, (raa + rbb) * 0.14f)
+            tMats[z] = computeMk2x2(taa, tab, tbb, raa, rab, rbb, epsT, epsR, minGain, maxGain)
         }
 
         val hasTgtSkin = tgtSkinL.size >= 20
         val hasRefSkin = refSkinL.size >= 20
-        val tgtSkinMuA = if (hasTgtSkin) (tgtSkinASum / tgtSkinL.size).toFloat() else 0.035f
-        val tgtSkinMuB = if (hasTgtSkin) (tgtSkinBSum / tgtSkinL.size).toFloat() else 0.045f
-        val refSkinAng = if (hasRefSkin) atan2((refSkinBSum / refSkinL.size).toFloat(), (refSkinASum / refSkinL.size).toFloat()) else null
-        val refSkinC = if (hasRefSkin) {
-            val a = (refSkinASum / refSkinL.size).toFloat()
-            val b = (refSkinBSum / refSkinL.size).toFloat()
-            sqrt(a * a + b * b)
-        } else null
+        val refSkinMeanA = if (hasRefSkin) (refSkinASum / refSkinL.size).toFloat() else null
 
-        // Step 3: Populate 17x17x17 3D LUT
+        // Step 3: Populate 25x25x25 3D LUT
         val dim = MATCH_LUT_DIM
         val lut = FloatArray(dim * dim * dim * 3)
         val denom = (dim - 1).toFloat()
@@ -736,52 +788,53 @@ object AiColorMatchEngine {
                     }
                     val invW = if (wSum > 1e-6f) 1f / wSum else 1f / zones
 
+                    val cIn = sqrt(aIn * aIn + bIn * bIn)
+                    val shadowClean = 0.50f + 0.50f * smoothstep(0.04f, 0.24f, lOut)
+                    val hiClean = 1f - 0.50f * smoothstep(0.62f, 0.92f, lOut)
+                    val zoneCastScale = shadowClean * hiClean
+                    val bloom = if (isFlat) 1.55f else 1.20f
+                    val sigC = smoothstep(0.0085f, 0.017f, cIn)
+
                     var aMk = 0f; var bMk = 0f
                     for (z in 0 until zones) {
                         val wz = wZ[z] * invW
                         val da = aIn - muTa[z]
                         val db = bIn - muTb[z]
+                        val dc = sqrt(da * da + db * db)
                         val mat = tMats[z]
-                        aMk += wz * (muRa[z] + mat.m00 * da + mat.m01 * db)
-                        bMk += wz * (muRb[z] + mat.m10 * da + mat.m11 * db)
+                        val mkA = mat.m00 * da + mat.m01 * db
+                        val mkB = mat.m10 * da + mat.m11 * db
+                        val signalT = sigC * smoothstep(0.006f, 0.015f, dc)
+                        val ta = (da * 0.28f) * (1f - signalT) + (mkA * bloom) * signalT
+                        val tb = (db * 0.28f) * (1f - signalT) + (mkB * bloom) * signalT
+                        aMk += wz * (muRa[z] * zoneCastScale + ta)
+                        bMk += wz * (muRb[z] * zoneCastScale + tb)
                     }
 
-                    val cIn = sqrt(aIn * aIn + bIn * bIn)
-                    if (lIn > 0.85f && cIn < 0.03f) {
-                        val hiGuard = smoothstep(0.85f, 0.99f, lIn) * (1f - smoothstep(0.01f, 0.03f, cIn))
+                    if (lOut > 0.78f && cIn < 0.035f) {
+                        val hiGuard = smoothstep(0.78f, 0.96f, lOut) * (1f - smoothstep(0.01f, 0.035f, cIn))
                         aMk *= 1f - hiGuard * 0.55f
                         bMk *= 1f - hiGuard * 0.55f
                     }
 
                     var aOut = aMk; var bOut = bMk
-                    if (hasTgtSkin && cIn > 0.004f && lIn > 0.18f && lIn < 0.90f) {
+                    if (hasTgtSkin && aIn > 0.0068f && bIn > -0.001f && lIn > 0.42f && lIn < 0.97f) {
                         val angIn = atan2(bIn, aIn)
-                        val skinAngCenter = atan2(tgtSkinMuB, tgtSkinMuA).coerceIn(0.32f, 0.96f)
-                        val angDiff = kotlin.math.abs(angIn - skinAngCenter)
-                        val minC = if (isFlat) 0.006f else 0.016f
-                        if (angDiff < 0.42f && cIn >= minC && cIn < 0.16f) {
-                            val wAng = 1f - smoothstep(0.16f, 0.42f, angDiff)
-                            val wLum = smoothstep(0.18f, 0.34f, lIn) * (1f - smoothstep(0.80f, 0.92f, lIn))
-                            val wCh = 1f - smoothstep(0.10f, 0.16f, cIn)
-                            val skinW = (wAng * wLum * wCh).coerceIn(0f, 1f)
-                            if (skinW > 0.01f) {
-                                val mkAng = atan2(bOut, aOut)
-                                val mkC = sqrt(aOut * aOut + bOut * bOut)
-                                val (targetAng, minSkC, maxSkC) = if (refSkinAng != null && refSkinC != null) {
-                                    val cRefAng = refSkinAng.coerceIn(0.40f, 0.98f)
-                                    val bAng = cRefAng * 0.72f + mkAng.coerceIn(0.36f, 1.02f) * 0.28f
-                                    Triple(bAng, (refSkinC * 0.65f).coerceIn(0.045f, 0.085f), 0.135f)
-                                } else {
-                                    val healthy = skinAngCenter.coerceIn(0.46f, 0.88f)
-                                    val hinted = healthy + (mkAng - healthy).coerceIn(-0.16f, 0.16f)
-                                    Triple(hinted, if (isFlat) 0.055f else 0.042f, 0.125f)
+                        if (angIn > 0.12f && angIn < 0.92f) {
+                            val wSk = smoothstep(0.0068f, 0.0105f, aIn) *
+                                smoothstep(0.42f, 0.56f, lIn) *
+                                (1f - smoothstep(0.91f, 0.98f, lIn)) *
+                                (1f - smoothstep(0.72f, 0.92f, angIn))
+                            if (wSk > 0.02f) {
+                                val minA = refSkinMeanA?.coerceIn(0.030f, 0.044f) ?: 0.032f
+                                if (aOut < minA) aOut += (minA - aOut) * wSk * 0.85f
+                                if (bOut < 0.008f) bOut += (0.011f - bOut) * wSk * 0.75f
+                                val cSk = sqrt(aOut * aOut + bOut * bOut)
+                                if (cSk > 0.100f) {
+                                    val sc = 0.100f / cSk
+                                    aOut = aOut * (1f - wSk) + aOut * sc * wSk
+                                    bOut = bOut * (1f - wSk) + bOut * sc * wSk
                                 }
-                                val targetC = mkC.coerceIn(minSkC, maxSkC)
-                                val safeA = targetC * cos(targetAng)
-                                val safeB = targetC * sin(targetAng)
-                                val blend = skinW * 0.72f
-                                aOut += (safeA - aOut) * blend
-                                bOut += (safeB - bOut) * blend
                             }
                         }
                     }
@@ -805,42 +858,10 @@ object AiColorMatchEngine {
         forceRawFlat: Boolean? = null,
         refName: String = "Reference"
     ): DevelopParams {
-        val ref = extractStatsFromPixels(refPixels)
-        val tgt = extractStatsFromPixels(targetPixels)
-        val bothPortraits = ref.skinPixelCount >= 30 && tgt.skinPixelCount >= 30
-
-        val dEv = if (bothPortraits) {
-            ((ref.skinMedianLum.coerceAtLeast(0.12f) - tgt.skinMedianLum.coerceAtLeast(0.12f)) * 1.4f)
-                .coerceIn(-0.55f, 0.55f)
-        } else {
-            ((ref.p50Lum.coerceAtLeast(0.05f) - tgt.p50Lum.coerceAtLeast(0.05f)) * 1.1f)
-                .coerceIn(-0.60f, 0.60f)
-        }
-        val refSpread = (ref.p95Lum - ref.p05Lum).coerceAtLeast(0.08f)
-        val tgtSpread = (tgt.p95Lum - tgt.p05Lum).coerceAtLeast(0.08f)
-        val dCon = ((refSpread / tgtSpread - 1f) * 12f).coerceIn(-10f, 12f)
-        val dWht = ((ref.p95Lum - tgt.p95Lum) * 15f).coerceIn(-12f, 12f)
-
-        val (dTemp, dTint) = if (bothPortraits) {
-            val rg = ref.skinMeanRg - tgt.skinMeanRg
-            val bg = ref.skinMeanBg - tgt.skinMeanBg
-            (((rg - bg) * 700f).coerceIn(-260f, 260f)) to (((rg + bg) * 3f).coerceIn(-5f, 5f))
-        } else {
-            val rg = ref.midRgRatio - tgt.midRgRatio
-            val bg = ref.midBgRatio - tgt.midBgRatio
-            (((rg - bg) * 650f).coerceIn(-340f, 340f)) to (((rg + bg - 2f) * 6f).coerceIn(-5f, 5f))
-        }
-
         val (lutData, palette, isFlat) = buildMatchLutFromPixels(refPixels, targetPixels, forceRawFlat)
         val lutOk = lutData.size == MATCH_LUT_DIM * MATCH_LUT_DIM * MATCH_LUT_DIM * 3
 
         return targetParams.copy(
-            whiteBalance = WhiteBalanceMode.CUSTOM,
-            temperature = (targetParams.temperature + dTemp).coerceIn(2800f, 12000f),
-            tint = (targetParams.tint + dTint).coerceIn(-50f, 50f),
-            exposure = (targetParams.exposure + dEv).coerceIn(-3f, 3f),
-            contrast = (targetParams.contrast + dCon).coerceIn(-50f, 50f),
-            whites = (targetParams.whites + dWht).coerceIn(-20f, 20f),
             matchLutDim = if (lutOk) MATCH_LUT_DIM else 0,
             matchLutData = if (lutOk) lutData else FloatArray(0),
             matchToneAmount = if (lutOk && targetParams.hasColorMatchLut()) targetParams.matchToneAmount.coerceIn(0f, 100f) else 100f,
@@ -872,16 +893,11 @@ object AiColorMatchEngine {
         } else {
             refSmall
         }
-        // Compute gentle baseline adjustments cleanly, then sample the rendered pre-LUT target buffer
-        // so the 3D LUT matches the live pipeline pixel distribution 1:1.
+        // Render pre-LUT baseline using user's own Develop parameters without hijacking Basic sliders
         val refPx = IntArray(renderedRef.width * renderedRef.height).also {
             renderedRef.getPixels(it, 0, renderedRef.width, 0, 0, renderedRef.width, renderedRef.height)
         }
-        val rawTgtPx = IntArray(tgtSmall.width * tgtSmall.height).also {
-            tgtSmall.getPixels(it, 0, tgtSmall.width, 0, 0, tgtSmall.width, tgtSmall.height)
-        }
-        val preBase = matchPixelsToReference(refPx, rawTgtPx, targetParams.clearColorMatch(), forceRawFlat, refName)
-        val baseOnlyParams = preBase.clearColorMatch().copy(vignetteAmount = 0f, grainAmount = 0f)
+        val baseOnlyParams = targetParams.clearColorMatch().copy(vignetteAmount = 0f, grainAmount = 0f)
         val renderedTgt = KotlinPv2012Engine.render(
             tgtSmall,
             baseOnlyParams,
@@ -899,9 +915,9 @@ object AiColorMatchEngine {
         if (tgtSmall !== targetBitmap && !tgtSmall.isRecycled) tgtSmall.recycle()
 
         val lutOk = lutData.size == MATCH_LUT_DIM * MATCH_LUT_DIM * MATCH_LUT_DIM * 3
-        return preBase.copy(
-            clarity = if (refParams != null) (preBase.clarity * 0.5f + refParams.clarity * 0.5f).coerceIn(-100f, 100f) else preBase.clarity,
-            dehaze = if (refParams != null) (preBase.dehaze * 0.5f + refParams.dehaze * 0.5f).coerceIn(-100f, 100f) else preBase.dehaze,
+        return targetParams.copy(
+            clarity = if (refParams != null) (targetParams.clarity * 0.5f + refParams.clarity * 0.5f).coerceIn(-100f, 100f) else targetParams.clarity,
+            dehaze = if (refParams != null) (targetParams.dehaze * 0.5f + refParams.dehaze * 0.5f).coerceIn(-100f, 100f) else targetParams.dehaze,
             matchLutDim = if (lutOk) MATCH_LUT_DIM else 0,
             matchLutData = if (lutOk) lutData else FloatArray(0),
             matchToneAmount = if (lutOk && targetParams.hasColorMatchLut()) targetParams.matchToneAmount.coerceIn(0f, 100f) else 100f,

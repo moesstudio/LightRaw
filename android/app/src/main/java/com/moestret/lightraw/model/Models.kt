@@ -202,7 +202,7 @@ data class DevelopParams(
     val retouchSpots: List<RetouchArea> = emptyList(),
     val appliedPresetName: String = "",
     val presetAmount: Float = 100f,
-    // Reference Color & Tone Match (17x17x17 OKLab 3D Look LUT)
+    // Reference Color & Tone Match (25x25x25 OKLab 3D Look LUT)
     val matchLutDim: Int = 0,
     val matchLutData: FloatArray = FloatArray(0),
     val matchToneAmount: Float = 100f,

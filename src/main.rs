@@ -1248,10 +1248,24 @@ mod tests {
         app.auto_match_color_to_reference();
 
         let updated_tgt = app.active_photo();
-        // Exposure should have increased because reference is brighter (0.5+ vs 0.3)
-        assert!(updated_tgt.params.exposure_2012 > 0.0);
-        // Temperature should have warmed up because reference has higher R/B ratio
-        assert!(updated_tgt.params.temperature > 5500.0);
+        assert!(updated_tgt.params.has_color_match_lut());
+        // Basic sliders stay clean (like ProLuth) while all tone/color match lives in the 3D LUT
+        assert_eq!(updated_tgt.params.exposure_2012, 0.0);
+        assert_eq!(updated_tgt.params.temperature, 5500.0);
+
+        let rendered_before = crate::pipeline::render_develop_pipeline(
+            app.thumb_raw_cache.get(&1).unwrap(),
+            &crate::params::DevelopParams::default(),
+            crate::pipeline::RenderOptions::default(),
+        );
+        let rendered_after = crate::pipeline::render_develop_pipeline(
+            app.thumb_raw_cache.get(&1).unwrap(),
+            &updated_tgt.params,
+            crate::pipeline::RenderOptions::default(),
+        );
+        // Rendered mean luminance & warmth (R-B) should have increased to match brighter warm ref
+        assert!(rendered_after.mean_lum > rendered_before.mean_lum);
+        assert!(rendered_after.rgba[0] > rendered_after.rgba[2]);
         // History step recorded
         assert!(updated_tgt.history.last().unwrap().name.contains("Auto Match Color"));
 
@@ -1450,7 +1464,7 @@ mod tests {
         let hi_b = retro_frame.rgba[hi_off + 2] as f32 / 255.0;
         assert!(hi_r > hi_b + 0.06, "Expected warm golden highlights from Retro ref: r={hi_r} b={hi_b}");
 
-        // 3. Tonal=0 & Warna=0 gives identity LUT output, and .cube export is valid 17x17x17
+        // 3. Tonal=0 & Warna=0 gives identity LUT output, and .cube export is valid 25x25x25
         let mut zero_amt = joker_matched.clone();
         zero_amt.match_tone_amount = 0.0;
         zero_amt.match_color_amount = 0.0;
@@ -1459,8 +1473,8 @@ mod tests {
         assert!((z_shd_g - shd_g).abs() > 0.08, "Zero Tonal/Warna must undo the LUT look");
 
         let cube = export_match_cube_lut(&joker_matched).expect("cube LUT text");
-        assert!(cube.contains("LUT_3D_SIZE 17"));
+        assert!(cube.contains("LUT_3D_SIZE 25"));
         let triplet_lines = cube.lines().filter(|l| l.split_whitespace().count() == 3 && l.chars().next().is_some_and(|c| c.is_ascii_digit())).count();
-        assert_eq!(triplet_lines, 17 * 17 * 17);
+        assert_eq!(triplet_lines, 25 * 25 * 25);
     }
 }

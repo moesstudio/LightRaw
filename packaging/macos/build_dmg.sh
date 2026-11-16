@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build macOS DMG Installer for LightRaw
-VERSION="${LIGHTRAW_VERSION:-1.2.1}"
+VERSION="${LIGHTRAW_VERSION:-1.2.2}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 STAGING_DIR="${DIST_DIR}/dmg_staging"
