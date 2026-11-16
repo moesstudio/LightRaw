@@ -202,9 +202,10 @@ data class DevelopParams(
     val retouchSpots: List<RetouchArea> = emptyList(),
     val appliedPresetName: String = "",
     val presetAmount: Float = 100f,
-    // Reference Color & Tone Match (25x25x25 OKLab 3D Look LUT)
+    // Reference Color & Tone Match (25x25x25 OKLab 3D Dual-LUT: Subject/Main + Background)
     val matchLutDim: Int = 0,
     val matchLutData: FloatArray = FloatArray(0),
+    val matchBgLutData: FloatArray = FloatArray(0),
     val matchToneAmount: Float = 100f,
     val matchColorAmount: Float = 100f,
     val matchRawFlat: Boolean = false,
@@ -214,9 +215,13 @@ data class DevelopParams(
     fun hasColorMatchLut(): Boolean =
         matchLutDim >= 2 && matchLutData.size == matchLutDim * matchLutDim * matchLutDim * 3
 
+    fun hasColorMatchBgLut(): Boolean =
+        matchLutDim >= 2 && matchBgLutData.size == matchLutDim * matchLutDim * matchLutDim * 3
+
     fun clearColorMatch(): DevelopParams = copy(
         matchLutDim = 0,
         matchLutData = FloatArray(0),
+        matchBgLutData = FloatArray(0),
         matchToneAmount = 100f,
         matchColorAmount = 100f,
         matchRawFlat = false,
@@ -236,6 +241,7 @@ data class DevelopParams(
         masks = masks.map { it.copy(brushPoints = it.brushPoints.toList()) },
         retouchSpots = retouchSpots.toList(),
         matchLutData = matchLutData.copyOf(),
+        matchBgLutData = matchBgLutData.copyOf(),
         matchPalette = matchPalette.copyOf()
     )
 
@@ -357,6 +363,9 @@ data class DevelopParams(
         o.put("matchLutDim", matchLutDim)
         if (hasColorMatchLut()) {
             o.put("matchLutB64", encodeLutB64(matchLutData))
+        }
+        if (hasColorMatchBgLut()) {
+            o.put("matchBgLutB64", encodeLutB64(matchBgLutData))
         }
         o.put("matchToneAmount", matchToneAmount.toDouble())
         o.put("matchColorAmount", matchColorAmount.toDouble())
@@ -588,6 +597,10 @@ data class DevelopParams(
                     matchLutData = o.optInt("matchLutDim", 0).let { d ->
                         if (d >= 2) decodeLutB64(o.optString("matchLutB64", ""), d * d * d * 3) else FloatArray(0)
                     },
+                    matchBgLutData = o.optInt("matchLutDim", 0).let { d ->
+                        val bgStr = o.optString("matchBgLutB64", "")
+                        if (d >= 2 && bgStr.isNotEmpty()) decodeLutB64(bgStr, d * d * d * 3) else FloatArray(0)
+                    },
                     matchToneAmount = o.optDouble("matchToneAmount", 100.0).toFloat(),
                     matchColorAmount = o.optDouble("matchColorAmount", 100.0).toFloat(),
                     matchRawFlat = o.optBoolean("matchRawFlat", false),
@@ -724,6 +737,7 @@ data class CopySettingsMask(
                 cgBalance = src.cgBalance,
                 matchLutDim = src.matchLutDim,
                 matchLutData = src.matchLutData.copyOf(),
+                matchBgLutData = src.matchBgLutData.copyOf(),
                 matchToneAmount = src.matchToneAmount,
                 matchColorAmount = src.matchColorAmount,
                 matchRawFlat = src.matchRawFlat,

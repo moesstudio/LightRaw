@@ -1477,4 +1477,93 @@ mod tests {
         let triplet_lines = cube.lines().filter(|l| l.split_whitespace().count() == 3 && l.chars().next().is_some_and(|c| c.is_ascii_digit())).count();
         assert_eq!(triplet_lines, 25 * 25 * 25);
     }
+
+    #[test]
+    fn test_ai_semantic_dual_lut_studio_portrait_preserves_hair_shirt_skin_and_backdrop() {
+        use crate::ai::color_match::match_color_and_tone_ex;
+        use crate::params::DevelopParams;
+        use crate::pipeline::{render_develop_pipeline, RawSourceImage, RenderOptions};
+
+        let to_lin = |s: f32| -> f32 {
+            if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        };
+        let (w, h) = (40u32, 40u32);
+        let build_studio_portrait = |wall: [f32; 3], hair: [f32; 3], skin: [f32; 3], shirt: [f32; 3]| -> RawSourceImage {
+            let mut rgb = vec![0.0f32; (w * h * 3) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let c = if (11..=28).contains(&x) && (6..=37).contains(&y) {
+                        if y <= 11 {
+                            hair
+                        } else if y <= 19 {
+                            skin
+                        } else {
+                            shirt
+                        }
+                    } else {
+                        wall
+                    };
+                    let idx = ((y * w + x) * 3) as usize;
+                    rgb[idx] = to_lin(c[0]);
+                    rgb[idx + 1] = to_lin(c[1]);
+                    rgb[idx + 2] = to_lin(c[2]);
+                }
+            }
+            RawSourceImage::from_linear_rgb(w, h, w, h, rgb, 5500.0, 0.0, 0.0, false)
+        };
+
+        // Reference: vivid royal blue wall + khaki shirt portrait
+        let ref_img = build_studio_portrait(
+            [0.04, 0.42, 0.90],
+            [0.07, 0.06, 0.06],
+            [0.76, 0.56, 0.45],
+            [0.62, 0.50, 0.36],
+        );
+        // Target: cooler blue wall + student with black hair & white uniform shirt
+        let tgt_img = build_studio_portrait(
+            [0.05, 0.36, 0.80],
+            [0.08, 0.08, 0.08],
+            [0.70, 0.50, 0.39],
+            [0.86, 0.86, 0.86],
+        );
+
+        let matched = match_color_and_tone_ex(
+            &ref_img,
+            None,
+            &tgt_img,
+            &DevelopParams::default(),
+            None,
+            "Studio_Ref.png",
+        );
+        assert!(matched.has_color_match_lut());
+        assert!(matched.has_color_match_bg_lut(), "Studio portrait should generate Subject + BG dual LUT");
+        assert!(!matched.match_raw_flat, "Already-developed studio portrait must not false-trigger Raw/Flat");
+
+        let frame = render_develop_pipeline(&tgt_img, &matched, RenderOptions::default());
+        let px = |x: u32, y: u32| -> (f32, f32, f32) {
+            let off = ((y * w + x) * 4) as usize;
+            (
+                frame.rgba[off] as f32 / 255.0,
+                frame.rgba[off + 1] as f32 / 255.0,
+                frame.rgba[off + 2] as f32 / 255.0,
+            )
+        };
+
+        // 1. Hair stays neutral dark (NOT cyan)
+        let (hr, hg, hb) = px(20, 8);
+        assert!(hr < 0.22 && hg < 0.22 && hb < 0.24 && (hb - hr) < 0.06, "Hair leaked cyan/tint: ({hr}, {hg}, {hb})");
+
+        // 2. White shirt stays bright & neutral white (NOT khaki/cyan)
+        let (wr, wg, wb) = px(20, 28);
+        assert!(wr > 0.70 && wg > 0.70 && wb > 0.70, "White shirt crushed dark: ({wr}, {wg}, {wb})");
+        assert!((wr - wb).abs() < 0.09 && (wg - wb).abs() < 0.08, "White shirt stained: ({wr}, {wg}, {wb})");
+
+        // 3. Face skin stays warm & healthy R > G > B
+        let (sr, sg, sb) = px(20, 15);
+        assert!(sr > sg && sg > sb && sr > 0.55 && (sr - sb) > 0.14, "Skin color skewed: ({sr}, {sg}, {sb})");
+
+        // 4. Studio backdrop wall matches vivid cobalt blue
+        let (br, _bg, bb) = px(2, 2);
+        assert!(bb > 0.65 && bb > br + 0.45, "Studio backdrop faded/shifted: ({br}, {bb})");
+    }
 }

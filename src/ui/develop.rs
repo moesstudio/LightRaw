@@ -989,6 +989,15 @@ fn render_panel_match_reference(app: &mut LightRawApp, ctx: &egui::Context, ui: 
                 app.auto_match_color_with_mode(Some(true));
                 return;
             }
+            if p.has_color_match_bg_lut() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("AI Dual")
+                            .size(9.5)
+                            .color(Colors::ACCENT_BLUE),
+                    );
+                });
+            }
         });
 
         if is_mod {

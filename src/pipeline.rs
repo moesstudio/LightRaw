@@ -316,14 +316,37 @@ impl RawSourceImage {
 
     #[inline]
     pub fn sample_semantics(&self, nx: f32, ny: f32) -> (f32, f32, f32, f32) {
-        let sx = (nx.clamp(0.0, 1.0) * (self.sem_w.saturating_sub(1)) as f32) as usize;
-        let sy = (ny.clamp(0.0, 1.0) * (self.sem_h.saturating_sub(1)) as f32) as usize;
-        let idx = (sy * self.sem_w as usize + sx).min(self.depth_q.len().saturating_sub(1));
+        let w = self.sem_w as usize;
+        let h = self.sem_h as usize;
+        if w == 0 || h == 0 || self.subject_q.is_empty() {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let fx = (nx.clamp(0.0, 1.0) * w.saturating_sub(1) as f32).clamp(0.0, w.saturating_sub(1) as f32);
+        let fy = (ny.clamp(0.0, 1.0) * h.saturating_sub(1) as f32).clamp(0.0, h.saturating_sub(1) as f32);
+        let x0 = (fx.floor() as usize).min(w - 1);
+        let y0 = (fy.floor() as usize).min(h - 1);
+        let x1 = (x0 + 1).min(w - 1);
+        let y1 = (y0 + 1).min(h - 1);
+        let dx = fx - x0 as f32;
+        let dy = fy - y0 as f32;
+        let i00 = y0 * w + x0;
+        let i10 = y0 * w + x1;
+        let i01 = y1 * w + x0;
+        let i11 = y1 * w + x1;
+        let bilerp = |buf: &[u8]| -> f32 {
+            let v00 = buf.get(i00).copied().unwrap_or(0) as f32;
+            let v10 = buf.get(i10).copied().unwrap_or(0) as f32;
+            let v01 = buf.get(i01).copied().unwrap_or(0) as f32;
+            let v11 = buf.get(i11).copied().unwrap_or(0) as f32;
+            let top = v00 + (v10 - v00) * dx;
+            let bot = v01 + (v11 - v01) * dx;
+            (top + (bot - top) * dy) / 255.0
+        };
         (
-            self.depth_q[idx] as f32 / 255.0,
-            self.subject_q[idx] as f32 / 255.0,
-            self.sky_q[idx] as f32 / 255.0,
-            self.people_q[idx] as f32 / 255.0,
+            bilerp(&self.depth_q),
+            bilerp(&self.subject_q),
+            bilerp(&self.sky_q),
+            bilerp(&self.people_q),
         )
     }
 
@@ -1922,16 +1945,23 @@ pub fn render_develop_pipeline(
                 );
             }
 
-            // --- 11.5 Reference Color & Tone Match 3D LUT (`Tonal %` + `Warna %` in OKLab) ---
+            // --- 11.5 Hardware-AI Semantic Reference Color & Tone Match 3D LUT (`Tonal %` + `Warna %` in OKLab) ---
             if !is_bw
                 && params.has_color_match_lut()
                 && (params.match_tone_amount > 0.1 || params.match_color_amount > 0.1)
             {
-                let (mr, mg, mb) = crate::ai::color_match::apply_color_match_lut(
+                let bg_lut = if params.has_color_match_bg_lut() {
+                    Some(params.match_bg_lut_data.as_slice())
+                } else {
+                    None
+                };
+                let (mr, mg, mb) = crate::ai::color_match::apply_color_match_lut_semantic(
                     pr,
                     pg,
                     pb,
                     &params.match_lut_data,
+                    bg_lut,
+                    subj_v.max(peop_v * 0.85),
                     params.match_lut_dim as usize,
                     params.match_tone_amount,
                     params.match_color_amount,

@@ -553,6 +553,7 @@ pub fn apply_settings_with_mask(
         dest.color_grade_enable_global = src.color_grade_enable_global;
         dest.match_lut_dim = src.match_lut_dim;
         dest.match_lut_data = src.match_lut_data.clone();
+        dest.match_bg_lut_data = src.match_bg_lut_data.clone();
         dest.match_tone_amount = src.match_tone_amount;
         dest.match_color_amount = src.match_color_amount;
         dest.match_raw_flat = src.match_raw_flat;

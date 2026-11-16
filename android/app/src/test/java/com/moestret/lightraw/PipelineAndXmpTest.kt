@@ -278,4 +278,100 @@ class PipelineAndXmpTest {
         assertEquals(50f, halfStrength.matchToneAmount, 0.1f)
         assertEquals(50f, halfStrength.matchColorAmount, 0.1f)
     }
+
+    @Test
+    fun testAiSemanticDualLutStudioPortraitPreservesHairShirtSkinAndBackdrop() {
+        fun argb(r: Float, g: Float, b: Float): Int {
+            val ri = (r.coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+            val gi = (g.coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+            val bi = (b.coerceIn(0f, 1f) * 255f + 0.5f).toInt()
+            return (0xFF shl 24) or (ri shl 16) or (gi shl 8) or bi
+        }
+        val w = 40
+        val h = 40
+        fun buildPortrait(wall: FloatArray, hair: FloatArray, skin: FloatArray, shirt: FloatArray): IntArray {
+            val out = IntArray(w * h)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val c = if (x in 11..28 && y in 6..37) {
+                        when {
+                            y <= 11 -> hair
+                            y <= 19 -> skin
+                            else -> shirt
+                        }
+                    } else {
+                        wall
+                    }
+                    out[y * w + x] = argb(c[0], c[1], c[2])
+                }
+            }
+            return out
+        }
+
+        val refPx = buildPortrait(
+            floatArrayOf(0.04f, 0.42f, 0.90f),
+            floatArrayOf(0.07f, 0.06f, 0.06f),
+            floatArrayOf(0.76f, 0.56f, 0.45f),
+            floatArrayOf(0.62f, 0.50f, 0.36f)
+        )
+        val tgtPx = buildPortrait(
+            floatArrayOf(0.05f, 0.36f, 0.80f),
+            floatArrayOf(0.08f, 0.08f, 0.08f),
+            floatArrayOf(0.70f, 0.50f, 0.39f),
+            floatArrayOf(0.86f, 0.86f, 0.86f)
+        )
+
+        val matched = com.moestret.lightraw.engine.AiColorMatchEngine.matchPixelsToReference(
+            refPixels = refPx, refW = w, refH = h,
+            targetPixels = tgtPx, tgtW = w, tgtH = h,
+            targetParams = DevelopParams(),
+            forceRawFlat = null,
+            refName = "Studio_Ref"
+        )
+        assertTrue(matched.hasColorMatchLut())
+        assertTrue(matched.hasColorMatchBgLut())
+        assertFalse(matched.matchRawFlat)
+
+        val grid = com.moestret.lightraw.engine.AiColorMatchEngine.extractSemanticGrid(tgtPx, w, h)
+        val outRgb = FloatArray(3)
+        val t1 = FloatArray(3); val t2 = FloatArray(3); val t3 = FloatArray(3); val t4 = FloatArray(3)
+        fun evalAt(nx: Float, ny: Float, r: Float, g: Float, b: Float): Triple<Float, Float, Float> {
+            val sw = com.moestret.lightraw.engine.AiColorMatchEngine.sampleBilinear(
+                grid.subjectWeights, grid.width, grid.height, nx, ny
+            )
+            com.moestret.lightraw.engine.AiColorMatchEngine.applyColorMatchLutSemantic(
+                r, g, b,
+                matched.matchLutData, matched.matchBgLutData, sw,
+                matched.matchLutDim, 100f, 100f,
+                t1, t2, t3, t4, outRgb
+            )
+            return Triple(outRgb[0], outRgb[1], outRgb[2])
+        }
+
+        // 1. Hair stays neutral dark (no cyan)
+        val (hr, hg, hb) = evalAt(0.50f, 0.20f, 0.08f, 0.08f, 0.08f)
+        assertTrue("Hair leaked cyan: ($hr, $hg, $hb)", hr < 0.22f && hg < 0.22f && hb < 0.24f && (hb - hr) < 0.06f)
+
+        // 2. White shirt stays bright & neutral
+        val (wr, wg, wb) = evalAt(0.50f, 0.72f, 0.86f, 0.86f, 0.86f)
+        assertTrue("White shirt too dark: ($wr, $wg, $wb)", wr > 0.70f && wg > 0.70f && wb > 0.70f)
+        assertTrue("White shirt stained: ($wr, $wg, $wb)", kotlin.math.abs(wr - wb) < 0.09f && kotlin.math.abs(wg - wb) < 0.08f)
+
+        // 3. Face skin stays warm R > G > B
+        val (sr, sg, sb) = evalAt(0.50f, 0.40f, 0.70f, 0.50f, 0.39f)
+        assertTrue("Skin skewed: ($sr, $sg, $sb)", sr > sg && sg > sb && sr > 0.55f && (sr - sb) > 0.14f)
+
+        // 4. Studio backdrop wall matches vivid cobalt blue
+        val (br, _, bb) = evalAt(0.05f, 0.05f, 0.05f, 0.36f, 0.80f)
+        assertTrue("Backdrop faded: ($br, $bb)", bb > 0.65f && bb > br + 0.45f)
+
+        // 5. Base64 uint16 BG LUT encode/decode & CopySettingsMask preserve matchBgLutData
+        val bgB64 = DevelopParams.encodeLutB64(matched.matchBgLutData)
+        val decodedBg = DevelopParams.decodeLutB64(bgB64, matched.matchBgLutData.size)
+        assertEquals(matched.matchBgLutData.size, decodedBg.size)
+        assertEquals(matched.matchBgLutData[500], decodedBg[500], 0.001f)
+        val copied = com.moestret.lightraw.model.CopySettingsMask(colorGrading = true)
+            .applyTo(matched, DevelopParams())
+        assertTrue(copied.hasColorMatchBgLut())
+    }
 }

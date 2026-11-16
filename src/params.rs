@@ -887,11 +887,13 @@ pub struct DevelopParams {
     // --- Local Masking (`kMaskGroupBasedCorrectionsKey`) ---
     pub mask_groups: Vec<MaskGroup>,
 
-    // --- Reference Color & Tone Match (`ProLuth`-style 3D OKLab Look) ---
+    // --- Reference Color & Tone Match (`ProLuth`-style 3D OKLab Look + Hardware-AI Dual-LUT) ---
     #[serde(default)]
     pub match_lut_dim: u8,
     #[serde(default)]
     pub match_lut_data: Vec<f32>,
+    #[serde(default)]
+    pub match_bg_lut_data: Vec<f32>,
     #[serde(default = "default_hundred")]
     pub match_tone_amount: f32, // 0..100
     #[serde(default = "default_hundred")]
@@ -1099,6 +1101,7 @@ impl Default for DevelopParams {
 
             match_lut_dim: 0,
             match_lut_data: Vec::new(),
+            match_bg_lut_data: Vec::new(),
             match_tone_amount: 100.0,
             match_color_amount: 100.0,
             match_raw_flat: false,
@@ -1182,9 +1185,15 @@ impl DevelopParams {
         d >= 2 && self.match_lut_data.len() == d * d * d * 3
     }
 
+    pub fn has_color_match_bg_lut(&self) -> bool {
+        let d = self.match_lut_dim as usize;
+        d >= 2 && self.match_bg_lut_data.len() == d * d * d * 3
+    }
+
     pub fn clear_color_match_lut(&mut self) {
         self.match_lut_dim = 0;
         self.match_lut_data.clear();
+        self.match_bg_lut_data.clear();
         self.match_tone_amount = 100.0;
         self.match_color_amount = 100.0;
         self.match_raw_flat = false;

@@ -20,7 +20,7 @@ fun parseSemverCode(ver: String): Int {
 val appVersionName: String = (project.findProperty("LIGHTRAW_VERSION_NAME") as String?)
     ?.takeIf { it.isNotBlank() }
     ?: System.getenv("LIGHTRAW_VERSION_NAME")?.takeIf { it.isNotBlank() }
-    ?: "1.2.2"
+    ?: "1.2.3"
 val appVersionCode: Int = parseSemverCode(appVersionName)
 
 val localKeystorePropsFile = rootProject.file("keystore.properties")

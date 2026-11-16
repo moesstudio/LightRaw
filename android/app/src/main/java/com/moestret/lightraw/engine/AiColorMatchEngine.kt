@@ -43,6 +43,250 @@ object AiColorMatchEngine {
         val skinMeanBg: Float
     )
 
+    enum class RegionRole { UNIFIED, SUBJECT, BACKGROUND }
+
+    data class FaceRect(val cx: Float, val cy: Float, val rx: Float, val ry: Float)
+
+    data class SemanticGrid(
+        val width: Int,
+        val height: Int,
+        val subjectWeights: FloatArray,
+        val skinWeights: FloatArray,
+        val faces: List<FaceRect>
+    )
+
+    fun sampleBilinear(grid: FloatArray, gw: Int, gh: Int, nx: Float, ny: Float): Float {
+        if (gw <= 0 || gh <= 0 || grid.size != gw * gh) return 1f
+        val x = nx.coerceIn(0f, 1f) * max(1, gw - 1)
+        val y = ny.coerceIn(0f, 1f) * max(1, gh - 1)
+        val x0 = floor(x).toInt().coerceIn(0, gw - 1)
+        val y0 = floor(y).toInt().coerceIn(0, gh - 1)
+        val x1 = min(gw - 1, x0 + 1)
+        val y1 = min(gh - 1, y0 + 1)
+        val fx = x - x0
+        val fy = y - y0
+        val v00 = grid[y0 * gw + x0]
+        val v10 = grid[y0 * gw + x1]
+        val v01 = grid[y1 * gw + x0]
+        val v11 = grid[y1 * gw + x1]
+        val top = v00 + (v10 - v00) * fx
+        val bot = v01 + (v11 - v01) * fx
+        return top + (bot - top) * fy
+    }
+
+    fun detectFaceRects(bitmap: Bitmap): List<FaceRect> {
+        return try {
+            val fw = max(4, bitmap.width and -2)
+            val fh = max(4, bitmap.height)
+            var scaled: Bitmap? = null
+            var rgb565: Bitmap? = null
+            try {
+                scaled = if (fw != bitmap.width || fh != bitmap.height) {
+                    Bitmap.createScaledBitmap(bitmap, fw, fh, true)
+                } else null
+                val srcFor565 = scaled ?: bitmap
+                rgb565 = if (srcFor565.config == Bitmap.Config.RGB_565) {
+                    srcFor565
+                } else {
+                    srcFor565.copy(Bitmap.Config.RGB_565, false)
+                }
+                if (rgb565 == null) return emptyList()
+                val detector = android.media.FaceDetector(fw, fh, 4)
+                val found = arrayOfNulls<android.media.FaceDetector.Face>(4)
+                val count = detector.findFaces(rgb565, found)
+                val out = ArrayList<FaceRect>(count)
+                val mid = android.graphics.PointF()
+                for (k in 0 until count) {
+                    val f = found[k] ?: continue
+                    if (f.confidence() < 0.32f) continue
+                    f.getMidPoint(mid)
+                    val ed = f.eyesDistance()
+                    if (ed > 1.5f) {
+                        out.add(
+                            FaceRect(
+                                cx = (mid.x / fw).coerceIn(0f, 1f),
+                                cy = ((mid.y + ed * 0.25f) / fh).coerceIn(0f, 1f),
+                                rx = (ed * 1.15f / fw).coerceIn(0.03f, 0.30f),
+                                ry = (ed * 1.55f / fh).coerceIn(0.04f, 0.38f)
+                            )
+                        )
+                    }
+                }
+                out
+            } finally {
+                if (rgb565 != null && rgb565 !== bitmap && rgb565 !== scaled && !rgb565.isRecycled) {
+                    rgb565.recycle()
+                }
+                if (scaled != null && scaled !== bitmap && !scaled.isRecycled) {
+                    scaled.recycle()
+                }
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    fun extractSemanticGrid(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        faces: List<FaceRect> = emptyList()
+    ): SemanticGrid {
+        if (w < 16 || h < 16 || pixels.size < w * h) {
+            return SemanticGrid(1, 1, floatArrayOf(1f), floatArrayOf(0f), faces)
+        }
+        val scale = min(1f, 72f / max(w, h))
+        val gw = max(16, (w * scale).roundToInt())
+        val gh = max(16, (h * scale).roundToInt())
+        val n = gw * gh
+
+        val linList = ArrayList<Float>(n / 2 + 4)
+        val linR = FloatArray(n)
+        val linG = FloatArray(n)
+        val linB = FloatArray(n)
+        for (gy in 0 until gh) {
+            val sy = min(h - 1, ((gy + 0.5f) / gh * h).toInt())
+            for (gx in 0 until gw) {
+                val sx = min(w - 1, ((gx + 0.5f) / gw * w).toInt())
+                val c = pixels[sy * w + sx]
+                val r = srgbToLinear(((c ushr 16) and 0xFF) / 255f)
+                val g = srgbToLinear(((c ushr 8) and 0xFF) / 255f)
+                val b = srgbToLinear((c and 0xFF) / 255f)
+                val idx = gy * gw + gx
+                linR[idx] = r; linG[idx] = g; linB[idx] = b
+                if (((gx + gy) and 1) == 0) {
+                    linList.add(0.2126f * r + 0.7152f * g + 0.0722f * b)
+                }
+            }
+        }
+        linList.sort()
+        val medLin = linList[linList.size / 2].coerceAtLeast(0.015f)
+        val expGain = (0.20f / medLin).coerceIn(0.45f, 4.5f)
+
+        val gL = FloatArray(n)
+        val gA = FloatArray(n)
+        val gB = FloatArray(n)
+        val skinWeights = FloatArray(n)
+        val labTmp = FloatArray(3)
+        val bL = ArrayList<Float>()
+        val bA = ArrayList<Float>()
+        val bB = ArrayList<Float>()
+        val rowMargin = max(2, (gh * 0.08f).toInt())
+        val colMargin = max(2, (gw * 0.08f).toInt())
+
+        for (gy in 0 until gh) {
+            val ny = gy / max(1, gh - 1).toFloat()
+            val isRowBorder = gy < rowMargin || gy >= gh - rowMargin
+            for (gx in 0 until gw) {
+                val nx = gx / max(1, gw - 1).toFloat()
+                val idx = gy * gw + gx
+                val rn = linearToSrgb((linR[idx] * expGain).coerceIn(0f, 1f))
+                val gn = linearToSrgb((linG[idx] * expGain).coerceIn(0f, 1f))
+                val bn = linearToSrgb((linB[idx] * expGain).coerceIn(0f, 1f))
+                srgbToOklab(rn, gn, bn, labTmp)
+                gL[idx] = labTmp[0]; gA[idx] = labTmp[1]; gB[idx] = labTmp[2]
+                if (isRowBorder || gx < colMargin || gx >= gw - colMargin) {
+                    bL.add(labTmp[0]); bA.add(labTmp[1]); bB.add(labTmp[2])
+                }
+                var fMask = 0f
+                for (f in faces) {
+                    val dx = (nx - f.cx) / max(0.02f, f.rx)
+                    val dy = (ny - f.cy) / max(0.02f, f.ry)
+                    val d = sqrt(dx * dx + dy * dy)
+                    fMask = max(fMask, 1f - smoothstep(0.75f, 1.20f, d))
+                }
+                val isSk = isSkinSrgb(rn, gn, bn, true)
+                val centerSkZone = nx in 0.18f..0.82f && ny in 0.08f..0.72f
+                skinWeights[idx] = when {
+                    fMask > 0.2f && isSk -> fMask
+                    fMask > 0.45f -> fMask * 0.65f
+                    faces.isEmpty() && centerSkZone && isSk -> 0.80f
+                    else -> 0f
+                }
+            }
+        }
+
+        bL.sort(); bA.sort(); bB.sort()
+        val bgL = bL[bL.size / 2]
+        val bgA = bA[bA.size / 2]
+        val bgB = bB[bB.size / 2]
+
+        var borderInliers = 0
+        for (bi in bL.indices) {
+            val dl = bL[bi] - bgL
+            val da = bA[bi] - bgA
+            val db = bB[bi] - bgB
+            val d = sqrt(dl * dl * 0.75f + da * da * 6.8f + db * db * 6.8f)
+            if (d <= 0.22f) borderInliers++
+        }
+        val borderInlierFrac = borderInliers.toFloat() / max(1, bL.size)
+        if (faces.isEmpty() && borderInlierFrac < 0.48f) {
+            return SemanticGrid(
+                gw,
+                gh,
+                FloatArray(n) { 1f },
+                skinWeights,
+                faces
+            )
+        }
+
+        val rawSubj = FloatArray(n)
+        for (gy in 0 until gh) {
+            val ny = gy / max(1, gh - 1).toFloat()
+            for (gx in 0 until gw) {
+                val nx = gx / max(1, gw - 1).toFloat()
+                val idx = gy * gw + gx
+                val dl = gL[idx] - bgL
+                val da = gA[idx] - bgA
+                val db = gB[idx] - bgB
+                val distBg = sqrt(dl * dl * 0.75f + da * da * 6.8f + db * db * 6.8f)
+                val sBg = smoothstep(0.11f, 0.28f, distBg)
+
+                var faceCore = 0f
+                var torsoPrior = 0f
+                for (f in faces) {
+                    val dx = (nx - f.cx) / max(0.02f, f.rx)
+                    val dy = (ny - f.cy) / max(0.02f, f.ry)
+                    val dHead = sqrt(dx * dx + dy * dy)
+                    faceCore = max(faceCore, 1f - smoothstep(0.90f, 1.35f, dHead))
+                    val downT = ((ny - f.cy) / max(0.04f, f.ry)).coerceIn(0f, 5.2f)
+                    if (ny >= f.cy - f.ry * 0.5f) {
+                        val halfW = f.rx * (1.25f + downT * 0.36f)
+                        val tDist = kotlin.math.abs(nx - f.cx) / max(0.04f, halfW)
+                        torsoPrior = max(torsoPrior, 1f - smoothstep(0.65f, 1.25f, tDist))
+                    }
+                }
+                val cdx = (nx - 0.50f) * 1.15f
+                val cdy = (ny - 0.52f) * 0.90f
+                val centerPrior = 1f - smoothstep(0.28f, 0.76f, sqrt(cdx * cdx + cdy * cdy))
+                val spatialPrior = if (faces.isNotEmpty()) max(torsoPrior, centerPrior * 0.85f) else centerPrior
+                rawSubj[idx] = max(faceCore, sBg * (0.68f + 0.32f * spatialPrior)).coerceIn(0f, 1f)
+            }
+        }
+
+        // Smooth subject weights with a separable 3-tap box blur pass so mask boundaries have no staircase jitter
+        val tmpBlur = FloatArray(n)
+        for (gy in 0 until gh) {
+            val row = gy * gw
+            for (gx in 0 until gw) {
+                val l = rawSubj[row + max(0, gx - 1)]
+                val r = rawSubj[row + min(gw - 1, gx + 1)]
+                tmpBlur[row + gx] = (l + rawSubj[row + gx] * 2f + r) * 0.25f
+            }
+        }
+        val subjOut = FloatArray(n)
+        for (gy in 0 until gh) {
+            val up = max(0, gy - 1) * gw
+            val cur = gy * gw
+            val dn = min(gh - 1, gy + 1) * gw
+            for (gx in 0 until gw) {
+                val v = (tmpBlur[up + gx] + tmpBlur[cur + gx] * 2f + tmpBlur[dn + gx]) * 0.25f
+                subjOut[cur + gx] = v.coerceIn(0f, 1f)
+            }
+        }
+        return SemanticGrid(gw, gh, subjOut, skinWeights, faces)
+    }
+
     private fun srgbToLinear(c: Float): Float {
         val x = c.coerceIn(0f, 1f)
         return if (x <= 0.04045f) x / 12.92f else ((x + 0.055f) / 1.055f).pow(2.4f)
@@ -156,13 +400,48 @@ object AiColorMatchEngine {
         tmpLin: FloatArray,
         outRgb: FloatArray
     ) {
+        applyColorMatchLutSemantic(
+            r, g, b, lut, null, 1f, dim, toneAmountPct, colorAmountPct,
+            tmpLutRgb, tmpLabIn, tmpLabLut, tmpLin, outRgb
+        )
+    }
+
+    fun applyColorMatchLutSemantic(
+        r: Float,
+        g: Float,
+        b: Float,
+        mainLut: FloatArray,
+        bgLut: FloatArray?,
+        subjWeight: Float,
+        dim: Int,
+        toneAmountPct: Float,
+        colorAmountPct: Float,
+        tmpLutRgb: FloatArray,
+        tmpLabIn: FloatArray,
+        tmpLabLut: FloatArray,
+        tmpLin: FloatArray,
+        outRgb: FloatArray
+    ) {
         val wt = (toneAmountPct / 100f).coerceIn(0f, 1f)
         val wc = (colorAmountPct / 100f).coerceIn(0f, 1f)
-        if ((wt <= 1e-4f && wc <= 1e-4f) || dim < 2 || lut.size != dim * dim * dim * 3) {
+        val expectedLen = dim * dim * dim * 3
+        if ((wt <= 1e-4f && wc <= 1e-4f) || dim < 2 || mainLut.size != expectedLen) {
             outRgb[0] = r; outRgb[1] = g; outRgb[2] = b
             return
         }
-        sampleLut3d(lut, dim, r, g, b, tmpLutRgb)
+        val hasBg = bgLut != null && bgLut.size == expectedLen
+        val sw = subjWeight.coerceIn(0f, 1f)
+        if (!hasBg || sw >= 0.985f) {
+            sampleLut3d(mainLut, dim, r, g, b, tmpLutRgb)
+        } else if (sw <= 0.015f) {
+            sampleLut3d(bgLut!!, dim, r, g, b, tmpLutRgb)
+        } else {
+            sampleLut3d(bgLut!!, dim, r, g, b, tmpLabIn)
+            sampleLut3d(mainLut, dim, r, g, b, tmpLabLut)
+            tmpLutRgb[0] = tmpLabIn[0] + (tmpLabLut[0] - tmpLabIn[0]) * sw
+            tmpLutRgb[1] = tmpLabIn[1] + (tmpLabLut[1] - tmpLabIn[1]) * sw
+            tmpLutRgb[2] = tmpLabIn[2] + (tmpLabLut[2] - tmpLabIn[2]) * sw
+        }
         if (wt >= 0.998f && wc >= 0.998f) {
             outRgb[0] = tmpLutRgb[0]
             outRgb[1] = tmpLutRgb[1]
@@ -483,101 +762,200 @@ object AiColorMatchEngine {
         )
     }
 
-    private fun buildMatchLutFromPixels(
-        refPixels: IntArray,
-        tgtPixels: IntArray,
-        forceRawFlat: Boolean?
-    ): Triple<FloatArray, IntArray, Boolean> {
-        val stepR = max(1, refPixels.size / 12000)
-        val stepT = max(1, tgtPixels.size / 12000)
+    private data class RegionSamples(
+        val r: FloatArray,
+        val g: FloatArray,
+        val b: FloatArray,
+        val size: Int
+    )
 
-        val refCountMax = refPixels.size / stepR + 1
-        val tgtCountMax = tgtPixels.size / stepT + 1
+    private data class SemanticSampleBundle(
+        val all: RegionSamples,
+        val subj: RegionSamples,
+        val bg: RegionSamples,
+        val faceSkinMedianLab: FloatArray?
+    )
 
-        val refLabs = FloatArray(refCountMax * 3)
-        val refLList = ArrayList<Float>(refCountMax)
+    private data class MatchDualLutOutput(
+        val mainLut: FloatArray,
+        val bgLut: FloatArray,
+        val palette: IntArray,
+        val isFlat: Boolean
+    )
+
+    private fun extractSemanticSamples(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        faces: List<FaceRect>
+    ): SemanticSampleBundle {
+        val total = min(pixels.size, w * h)
+        val grid = extractSemanticGrid(pixels, w, h, faces)
+        val step = max(1, total / 12000)
+        val maxN = total / step + 4
+
+        val allR = FloatArray(maxN); val allG = FloatArray(maxN); val allB = FloatArray(maxN); var allN = 0
+        val subjR = FloatArray(maxN); val subjG = FloatArray(maxN); val subjB = FloatArray(maxN); var subjN = 0
+        val bgR = FloatArray(maxN); val bgG = FloatArray(maxN); val bgB = FloatArray(maxN); var bgN = 0
+        val skinL = ArrayList<Float>(); val skinA = ArrayList<Float>(); val skinB = ArrayList<Float>()
+        val labTmp = FloatArray(3)
+        val hasRealGrid = grid.width >= 16 && grid.height >= 16 && grid.subjectWeights.size == grid.width * grid.height
+
+        var i = 0
+        while (i < total) {
+            val c = pixels[i]
+            val r = ((c ushr 16) and 0xFF) / 255f
+            val g = ((c ushr 8) and 0xFF) / 255f
+            val b = (c and 0xFF) / 255f
+            allR[allN] = r; allG[allN] = g; allB[allN] = b; allN++
+
+            if (hasRealGrid && w > 0 && h > 0) {
+                val py = i / w
+                val px = i - py * w
+                val nx = px.toFloat() / max(1, w - 1)
+                val ny = py.toFloat() / max(1, h - 1)
+                val sw = sampleBilinear(grid.subjectWeights, grid.width, grid.height, nx, ny)
+                val sk = sampleBilinear(grid.skinWeights, grid.width, grid.height, nx, ny)
+                if (sw >= 0.55f) {
+                    subjR[subjN] = r; subjG[subjN] = g; subjB[subjN] = b; subjN++
+                } else if (sw <= 0.35f) {
+                    bgR[bgN] = r; bgG[bgN] = g; bgB[bgN] = b; bgN++
+                }
+                if (sk >= 0.45f) {
+                    srgbToOklab(r, g, b, labTmp)
+                    skinL.add(labTmp[0]); skinA.add(labTmp[1]); skinB.add(labTmp[2])
+                }
+            }
+            i += step
+        }
+
+        val skinMedian = if (skinL.size >= 12) {
+            skinL.sort(); skinA.sort(); skinB.sort()
+            val m = skinL.size / 2
+            floatArrayOf(skinL[m], skinA[m], skinB[m])
+        } else null
+
+        return SemanticSampleBundle(
+            all = RegionSamples(allR, allG, allB, allN),
+            subj = RegionSamples(subjR, subjG, subjB, subjN),
+            bg = RegionSamples(bgR, bgG, bgB, bgN),
+            faceSkinMedianLab = skinMedian
+        )
+    }
+
+    private fun finalizeZoneStats(
+        wSum: Double,
+        aSum: Double,
+        bSum: Double,
+        aaSum: Double,
+        abSum: Double,
+        bbSum: Double,
+        aSamples: ArrayList<Float>,
+        bSamples: ArrayList<Float>,
+        wSamples: ArrayList<Float>,
+        useMedian: Boolean
+    ): FloatArray {
+        if (wSum <= 1e-4) return floatArrayOf(0f, 0f, 0.0005f, 0f, 0.0005f)
+        val rawMa = (aSum / wSum).toFloat()
+        val rawMb = (bSum / wSum).toFloat()
+        val ma = if (useMedian && aSamples.isNotEmpty()) weightedMedian(aSamples, wSamples) * 0.90f + rawMa * 0.10f else rawMa
+        val mb = if (useMedian && bSamples.isNotEmpty()) weightedMedian(bSamples, wSamples) * 0.90f + rawMb * 0.10f else rawMb
+        return floatArrayOf(
+            ma,
+            mb,
+            max(1e-7f, (aaSum / wSum).toFloat() - rawMa * rawMa),
+            (abSum / wSum).toFloat() - rawMa * rawMb,
+            max(1e-7f, (bbSum / wSum).toFloat() - rawMb * rawMb)
+        )
+    }
+
+    private fun buildMatchLutForRole(
+        refSamples: RegionSamples,
+        tgtSamples: RegionSamples,
+        refSkinAnchor: FloatArray?,
+        tgtSkinAnchor: FloatArray?,
+        forceRawFlat: Boolean?,
+        role: RegionRole
+    ): Pair<FloatArray, Boolean> {
+        val refN = refSamples.size
+        val tgtN = tgtSamples.size
+        if (refN == 0 || tgtN == 0) return FloatArray(0) to false
+
+        val refLabs = FloatArray(refN * 3)
+        val refLList = FloatArray(refN)
+        val refDarkChromas = ArrayList<Float>()
         val refSkinL = ArrayList<Float>()
         var refSkinASum = 0.0
         var refSkinBSum = 0.0
-        var refN = 0
-
         val labTmp = FloatArray(3)
-        var i = 0
-        while (i < refPixels.size) {
-            val c = refPixels[i]
-            val r = ((c ushr 16) and 0xFF) / 255f
-            val g = ((c ushr 8) and 0xFF) / 255f
-            val b = (c and 0xFF) / 255f
-            srgbToOklab(r, g, b, labTmp)
-            refLabs[refN * 3] = labTmp[0]
-            refLabs[refN * 3 + 1] = labTmp[1]
-            refLabs[refN * 3 + 2] = labTmp[2]
-            refLList.add(labTmp[0])
-            refN++
-            if (isSkinSrgb(r, g, b, false)) {
-                refSkinL.add(labTmp[0])
-                refSkinASum += labTmp[1]
-                refSkinBSum += labTmp[2]
-            }
-            i += stepR
-        }
-        val refLSorted = refLList.toFloatArray().apply { sort() }
-        val palette = extractPaletteFromLabs(refLabs, refN, 10)
 
-        val tgtLabs = FloatArray(tgtCountMax * 3)
-        val tgtLList = ArrayList<Float>(tgtCountMax)
-        var tgtN = 0
-        i = 0
-        while (i < tgtPixels.size) {
-            val c = tgtPixels[i]
-            val r = ((c ushr 16) and 0xFF) / 255f
-            val g = ((c ushr 8) and 0xFF) / 255f
-            val b = (c and 0xFF) / 255f
+        for (p in 0 until refN) {
+            val r = refSamples.r[p]; val g = refSamples.g[p]; val b = refSamples.b[p]
             srgbToOklab(r, g, b, labTmp)
-            tgtLabs[tgtN * 3] = labTmp[0]
-            tgtLabs[tgtN * 3 + 1] = labTmp[1]
-            tgtLabs[tgtN * 3 + 2] = labTmp[2]
-            tgtLList.add(labTmp[0])
-            tgtN++
-            i += stepT
+            val l = labTmp[0]; val a = labTmp[1]; val okb = labTmp[2]
+            refLabs[p * 3] = l; refLabs[p * 3 + 1] = a; refLabs[p * 3 + 2] = okb
+            refLList[p] = l
+            if (l < 0.30f) refDarkChromas.add(sqrt(a * a + okb * okb))
+            if (isSkinSrgb(r, g, b, false)) {
+                refSkinL.add(l)
+                refSkinASum += a; refSkinBSum += okb
+            }
         }
-        val tgtLSorted = tgtLList.toFloatArray().apply { sort() }
-        if (refLSorted.isEmpty() || tgtLSorted.isEmpty()) {
-            return Triple(FloatArray(0), palette, false)
+        val refLSorted = refLList.apply { sort() }
+        refDarkChromas.sort()
+        val refDarkChromaMed = if (refDarkChromas.isNotEmpty()) refDarkChromas[refDarkChromas.size / 2] else 0.02f
+
+        val tgtLList = FloatArray(tgtN)
+        var tgtChromaSqSum = 0.0
+        val tgtLabs = FloatArray(tgtN * 3)
+        for (p in 0 until tgtN) {
+            val r = tgtSamples.r[p]; val g = tgtSamples.g[p]; val b = tgtSamples.b[p]
+            srgbToOklab(r, g, b, labTmp)
+            val l = labTmp[0]; val a = labTmp[1]; val okb = labTmp[2]
+            tgtLabs[p * 3] = l; tgtLabs[p * 3 + 1] = a; tgtLabs[p * 3 + 2] = okb
+            tgtLList[p] = l
+            tgtChromaSqSum += a * a + okb * okb
         }
+        val tgtLSorted = tgtLList.apply { sort() }
+        val tgtChromaRms = sqrt(tgtChromaSqSum / max(1, tgtN)).toFloat()
 
         val tgtP05 = quantileFromSorted(tgtLSorted, 0.05f)
         val tgtP95 = quantileFromSorted(tgtLSorted, 0.95f)
+        val tgtP99 = quantileFromSorted(tgtLSorted, 0.99f)
         val tgtSpread = max(0.02f, tgtP95 - tgtP05)
-        val isFlat = forceRawFlat ?: (tgtSpread < 0.48f || tgtP05 > 0.14f)
+
+        val autoIsLogFlat = tgtChromaRms < 0.025f ||
+            (tgtSpread < 0.46f && tgtP99 < 0.84f) ||
+            (tgtP05 > 0.28f && tgtSpread < 0.55f)
+        val isFlat = forceRawFlat ?: autoIsLogFlat
+        val logChromaNeed = if (isFlat) 1f - smoothstep(0.018f, 0.048f, tgtChromaRms) else 0f
 
         val tgtSkinL = ArrayList<Float>()
-        var skIdx = 0
-        i = 0
-        while (i < tgtPixels.size && skIdx < tgtN) {
-            val c = tgtPixels[i]
-            val r = ((c ushr 16) and 0xFF) / 255f
-            val g = ((c ushr 8) and 0xFF) / 255f
-            val b = (c and 0xFF) / 255f
-            if (isSkinSrgb(r, g, b, isFlat)) {
-                tgtSkinL.add(tgtLabs[skIdx * 3])
+        for (p in 0 until tgtN) {
+            if (isSkinSrgb(tgtSamples.r[p], tgtSamples.g[p], tgtSamples.b[p], isFlat)) {
+                tgtSkinL.add(tgtLabs[p * 3])
             }
-            i += stepT
-            skIdx++
         }
 
-        // Step 1: 256-entry Smooth Filmic Histogram CDF Luminance Curve
+        // Step 1: 256-entry Role-Aware Luminance Curve
         val lBins = 256
         val lRaw = FloatArray(lBins)
         val t005 = quantileFromSorted(tgtLSorted, 0.005f)
         val t01 = quantileFromSorted(tgtLSorted, 0.01f)
-        val t99 = quantileFromSorted(tgtLSorted, 0.99f)
-        val t995 = quantileFromSorted(tgtLSorted, 0.995f)
+        val t50 = quantileFromSorted(tgtLSorted, 0.50f)
+        val t95 = tgtP95
+        val t99 = tgtP99
         val r01 = quantileFromSorted(refLSorted, 0.01f)
         val r05 = quantileFromSorted(refLSorted, 0.05f)
+        val r50 = quantileFromSorted(refLSorted, 0.50f)
         val r92 = quantileFromSorted(refLSorted, 0.92f)
+        val r95 = quantileFromSorted(refLSorted, 0.95f)
         val r99 = quantileFromSorted(refLSorted, 0.99f)
-        val spanT = max(0.08f, t995 - t005)
+        val refSpread = max(0.02f, r95 - r05)
+        val spanT = max(0.08f, quantileFromSorted(tgtLSorted, 0.995f) - t005)
+
+        val preserveSubjectWhites = role == RegionRole.SUBJECT && !autoIsLogFlat && t95 > r95 + 0.08f && t95 > 0.78f
+        val uniformBgBackdrop = role == RegionRole.BACKGROUND && refSpread < 0.20f
 
         for (bin in 0 until lBins) {
             val x = bin.toFloat() / (lBins - 1)
@@ -587,19 +965,29 @@ object AiColorMatchEngine {
                 x < t01 -> {
                     val k = (x / max(0.015f, t01)).coerceIn(0f, 1f)
                     val kSmooth = k * k * (3f - 2f * k)
-                    val targetLo = min(0.035f, r01 * 0.55f)
+                    val targetLo = min(0.04f, r01 * 0.65f)
                     targetLo + (r01 - targetLo) * kSmooth
                 }
                 x > t99 -> {
                     val k = ((x - t99) / max(0.015f, 1f - t99)).coerceIn(0f, 1f)
                     val kSmooth = k * k * (3f - 2f * k)
-                    val targetHi = max(0.92f, r99)
+                    val targetHi = max(0.92f, max(r99, t99))
                     r99 + (targetHi - r99) * kSmooth
                 }
                 else -> quantileFromSorted(refLSorted, q)
             }
 
-            val lGoal = when {
+            var lGoal = when {
+                uniformBgBackdrop -> {
+                    val bell = smoothstep(0.04f, 0.22f, x) * (1f - smoothstep(0.58f, 0.90f, x))
+                    val delta = (r50 - t50) * 0.92f * bell
+                    (x + delta).coerceIn(0.02f, 0.98f)
+                }
+                preserveSubjectWhites && x > 0.56f -> {
+                    val wHi = smoothstep(0.56f, 0.90f, x)
+                    val keptHi = max(x, lCdf)
+                    lCdf + (keptHi - lCdf) * (0.85f * wHi)
+                }
                 !isFlat -> {
                     val hiW = 0.42f * q * q * q
                     val airy = max(lCdf, lNorm * 0.95f + 0.04f)
@@ -617,15 +1005,33 @@ object AiColorMatchEngine {
                 else -> lCdf
             }
 
+            if (role != RegionRole.BACKGROUND && !autoIsLogFlat && !isFlat && lGoal > 0.78f) {
+                lGoal = max(lGoal, x * 0.94f)
+            }
+
             val wTone = when {
-                x < t01 -> 1f
-                isFlat -> 0.99f
-                else -> 0.95f
+                uniformBgBackdrop -> 0.90f
+                x < t01 && autoIsLogFlat -> 1f
+                isFlat -> if (autoIsLogFlat) 0.99f else 0.88f
+                else -> 0.92f
             }
             lRaw[bin] = x + (lGoal - x) * wTone
         }
 
-        if (tgtSkinL.size >= 20) {
+        if (role == RegionRole.SUBJECT && refSkinAnchor != null && tgtSkinAnchor != null && !autoIsLogFlat) {
+            val tgtSkL = tgtSkinAnchor[0].coerceIn(0.25f, 0.85f)
+            val refSkGoal = refSkinAnchor[0].coerceIn(0.45f, 0.78f)
+            val idx = (tgtSkL * (lBins - 1)).roundToInt().coerceIn(0, lBins - 1)
+            val lift = refSkGoal - lRaw[idx]
+            if (kotlin.math.abs(lift) > 0.01f) {
+                for (bin in 0 until lBins) {
+                    val x = bin.toFloat() / (lBins - 1)
+                    val dx = (x - tgtSkL) / 0.14f
+                    val w = exp(-(dx * dx))
+                    lRaw[bin] = (lRaw[bin] + lift * w * 0.58f).coerceIn(0.02f, 0.96f)
+                }
+            }
+        } else if (tgtSkinL.size >= 20) {
             tgtSkinL.sort()
             val tSkinMed = tgtSkinL[tgtSkinL.size / 2]
             val idx = (tSkinMed * (lBins - 1)).roundToInt().coerceIn(0, lBins - 1)
@@ -640,19 +1046,16 @@ object AiColorMatchEngine {
             }
         }
 
-        // Gaussian smoothing (sigma = 5.5 bins) prevents staircase banding while keeping crisp tone
         val lMap = FloatArray(lBins)
         val gSigma = 5.5f
         val gRad = 14
         for (bin in 0 until lBins) {
-            var wSum = 0f
-            var vSum = 0f
+            var wSum = 0f; var vSum = 0f
             for (d in -gRad..gRad) {
                 val j = (bin + d).coerceIn(0, lBins - 1)
                 val x = d / gSigma
                 val w = exp(-(x * x) * 0.5f)
-                wSum += w
-                vSum += w * lRaw[j]
+                wSum += w; vSum += w * lRaw[j]
             }
             lMap[bin] = vSum / wSum
         }
@@ -676,13 +1079,17 @@ object AiColorMatchEngine {
             return lMap[i0] * (1f - frac) + lMap[i1] * frac
         }
 
-        // Step 2: 8-Zone Weighted-Median Atmospheric Anchor + Noise-Safe Covariance Transfer
+        // Step 2: 8-Zone Weighted-Median & Monge-Kantorovich 2x2 Covariance Transfer
         val zones = 8
         val centers = floatArrayOf(0.06f, 0.18f, 0.30f, 0.42f, 0.54f, 0.66f, 0.78f, 0.90f)
         val zoneSigma = 0.13f
 
         val tW = DoubleArray(zones); val tA = DoubleArray(zones); val tB = DoubleArray(zones)
         val tAA = DoubleArray(zones); val tAB = DoubleArray(zones); val tBB = DoubleArray(zones)
+        val tASamples = Array(zones) { ArrayList<Float>() }
+        val tBSamples = Array(zones) { ArrayList<Float>() }
+        val tWSamples = Array(zones) { ArrayList<Float>() }
+
         val rW = DoubleArray(zones); val rA = DoubleArray(zones); val rB = DoubleArray(zones)
         val rAA = DoubleArray(zones); val rAB = DoubleArray(zones); val rBB = DoubleArray(zones)
         val rASamples = Array(zones) { ArrayList<Float>() }
@@ -691,23 +1098,23 @@ object AiColorMatchEngine {
 
         for (p in 0 until tgtN) {
             val lEff = evalLMap(tgtLabs[p * 3])
-            val a = tgtLabs[p * 3 + 1].toDouble()
-            val b = tgtLabs[p * 3 + 2].toDouble()
+            val af = tgtLabs[p * 3 + 1]; val bf = tgtLabs[p * 3 + 2]
+            val a = af.toDouble(); val b = bf.toDouble()
             for (z in 0 until zones) {
                 val dx = (lEff - centers[z]) / zoneSigma
-                val w = exp(-(dx * dx)).toDouble()
+                val wf = exp(-(dx * dx))
+                val w = wf.toDouble()
                 if (w > 0.008) {
                     tW[z] += w; tA[z] += w * a; tB[z] += w * b
                     tAA[z] += w * a * a; tAB[z] += w * a * b; tBB[z] += w * b * b
+                    tASamples[z].add(af); tBSamples[z].add(bf); tWSamples[z].add(wf)
                 }
             }
         }
         for (p in 0 until refN) {
             val l = refLabs[p * 3]
-            val af = refLabs[p * 3 + 1]
-            val bf = refLabs[p * 3 + 2]
-            val a = af.toDouble()
-            val b = bf.toDouble()
+            val af = refLabs[p * 3 + 1]; val bf = refLabs[p * 3 + 2]
+            val a = af.toDouble(); val b = bf.toDouble()
             for (z in 0 until zones) {
                 val dx = (l - centers[z]) / zoneSigma
                 val wf = exp(-(dx * dx))
@@ -720,45 +1127,41 @@ object AiColorMatchEngine {
             }
         }
 
-        val maxGain = if (isFlat) 1.85f else 1.60f
-        val minGain = 0.35f
+        val maxGain = when {
+            logChromaNeed > 0.3f -> 1.55f + 0.30f * logChromaNeed
+            role == RegionRole.BACKGROUND -> 1.45f
+            else -> 1.40f
+        }
+        val minGain = 0.38f
         val muTa = FloatArray(zones); val muTb = FloatArray(zones)
         val muRa = FloatArray(zones); val muRb = FloatArray(zones)
         val tMats = Array(zones) { Mat2(1f, 0f, 0f, 1f) }
 
         for (z in 0 until zones) {
-            val (ta, tb, taa, tab, tbb) = if (tW[z] > 1e-4) {
-                val ma = (tA[z] / tW[z]).toFloat(); val mb = (tB[z] / tW[z]).toFloat()
-                floatArrayOf(
-                    ma, mb,
-                    max(1e-7f, (tAA[z] / tW[z]).toFloat() - ma * ma),
-                    (tAB[z] / tW[z]).toFloat() - ma * mb,
-                    max(1e-7f, (tBB[z] / tW[z]).toFloat() - mb * mb)
-                )
-            } else floatArrayOf(0f, 0f, 0.0005f, 0f, 0.0005f)
-
-            val (ra, rb, raa, rab, rbb) = if (rW[z] > 1e-4) {
-                val rawMa = (rA[z] / rW[z]).toFloat(); val rawMb = (rB[z] / rW[z]).toFloat()
-                val ma = if (rASamples[z].isNotEmpty()) weightedMedian(rASamples[z], rWSamples[z]) * 0.90f + rawMa * 0.10f else rawMa
-                val mb = if (rBSamples[z].isNotEmpty()) weightedMedian(rBSamples[z], rWSamples[z]) * 0.90f + rawMb * 0.10f else rawMb
-                floatArrayOf(
-                    ma, mb,
-                    max(1e-7f, (rAA[z] / rW[z]).toFloat() - rawMa * rawMa),
-                    (rAB[z] / rW[z]).toFloat() - rawMa * rawMb,
-                    max(1e-7f, (rBB[z] / rW[z]).toFloat() - rawMb * rawMb)
-                )
-            } else floatArrayOf(0f, 0f, 0.0005f, 0f, 0.0005f)
-
-            muTa[z] = ta; muTb[z] = tb
-            muRa[z] = ra; muRb[z] = rb
-            val epsT = if (isFlat) max(1.2e-4f, (taa + tbb) * 0.30f) else max(1.5e-4f, (taa + tbb) * 0.40f)
-            val epsR = max(6.0e-5f, (raa + rbb) * 0.14f)
-            tMats[z] = computeMk2x2(taa, tab, tbb, raa, rab, rbb, epsT, epsR, minGain, maxGain)
+            val tz = finalizeZoneStats(
+                tW[z], tA[z], tB[z], tAA[z], tAB[z], tBB[z],
+                tASamples[z], tBSamples[z], tWSamples[z],
+                useMedian = (role == RegionRole.BACKGROUND)
+            )
+            val rz = finalizeZoneStats(
+                rW[z], rA[z], rB[z], rAA[z], rAB[z], rBB[z],
+                rASamples[z], rBSamples[z], rWSamples[z],
+                useMedian = true
+            )
+            muTa[z] = tz[0]; muTb[z] = tz[1]
+            muRa[z] = rz[0]; muRb[z] = rz[1]
+            val epsT = if (logChromaNeed > 0.3f) max(1.2e-4f, (tz[2] + tz[4]) * 0.30f) else max(1.6e-4f, (tz[2] + tz[4]) * 0.42f)
+            val epsR = max(6.0e-5f, (rz[2] + rz[4]) * 0.14f)
+            tMats[z] = computeMk2x2(tz[2], tz[3], tz[4], rz[2], rz[3], rz[4], epsT, epsR, minGain, maxGain)
         }
 
-        val hasTgtSkin = tgtSkinL.size >= 20
-        val hasRefSkin = refSkinL.size >= 20
-        val refSkinMeanA = if (hasRefSkin) (refSkinASum / refSkinL.size).toFloat() else null
+        val isCleanNeutralSubject = role == RegionRole.SUBJECT && refDarkChromaMed < 0.024f && logChromaNeed < 0.3f
+        val hasTgtSkin = tgtSkinAnchor != null || tgtSkinL.size >= 20
+        val refSkinMean: Pair<Float, Float>? = when {
+            refSkinAnchor != null -> refSkinAnchor[1] to refSkinAnchor[2]
+            refSkinL.size >= 20 -> (refSkinASum / refSkinL.size).toFloat() to (refSkinBSum / refSkinL.size).toFloat()
+            else -> null
+        }
 
         // Step 3: Populate 25x25x25 3D LUT
         val dim = MATCH_LUT_DIM
@@ -768,6 +1171,8 @@ object AiColorMatchEngine {
         val linTmp = FloatArray(3)
         val srgbOutTmp = FloatArray(3)
         val wZ = FloatArray(zones)
+        val bloom = 1f + 0.55f * logChromaNeed + if (!isFlat && logChromaNeed > 0.2f) 0.20f else 0f
+        val passthroughK = if (logChromaNeed > 0.3f) 0.28f else 0.88f
 
         for (bi in 0 until dim) {
             val b = bi / denom
@@ -778,55 +1183,91 @@ object AiColorMatchEngine {
                     srgbToOklab(r, g, b, labTmp)
                     val lIn = labTmp[0]; val aIn = labTmp[1]; val bIn = labTmp[2]
                     val lOut = evalLMap(lIn)
+                    val cIn = sqrt(aIn * aIn + bIn * bIn)
 
                     var wSum = 0f
                     for (z in 0 until zones) {
                         val dx = (lOut - centers[z]) / zoneSigma
                         val w = exp(-(dx * dx))
-                        wZ[z] = w
-                        wSum += w
+                        wZ[z] = w; wSum += w
                     }
                     val invW = if (wSum > 1e-6f) 1f / wSum else 1f / zones
 
-                    val cIn = sqrt(aIn * aIn + bIn * bIn)
                     val shadowClean = 0.50f + 0.50f * smoothstep(0.04f, 0.24f, lOut)
                     val hiClean = 1f - 0.50f * smoothstep(0.62f, 0.92f, lOut)
-                    val zoneCastScale = shadowClean * hiClean
-                    val bloom = if (isFlat) 1.55f else 1.20f
+                    val zoneCastScale = if (role == RegionRole.BACKGROUND) 1f else shadowClean * hiClean
                     val sigC = smoothstep(0.0085f, 0.017f, cIn)
 
                     var aMk = 0f; var bMk = 0f
                     for (z in 0 until zones) {
                         val wz = wZ[z] * invW
-                        val da = aIn - muTa[z]
-                        val db = bIn - muTb[z]
+                        var maR = muRa[z]; var mbR = muRb[z]
+                        val taCenter = muTa[z]; val tbCenter = muTb[z]
+
+                        if (isCleanNeutralSubject) {
+                            val neutralProtect = 1f - smoothstep(0.015f, 0.055f, cIn)
+                            val whiteGuard = smoothstep(0.68f, 0.90f, lOut)
+                            val darkGuard = 1f - smoothstep(0.08f, 0.34f, lOut)
+                            val keepGrade = 1f - max(0.82f * neutralProtect, max(0.86f * whiteGuard, 0.88f * darkGuard))
+                            maR *= keepGrade
+                            mbR *= keepGrade
+                        }
+
+                        val da = aIn - taCenter
+                        val db = bIn - tbCenter
                         val dc = sqrt(da * da + db * db)
                         val mat = tMats[z]
                         val mkA = mat.m00 * da + mat.m01 * db
                         val mkB = mat.m10 * da + mat.m11 * db
                         val signalT = sigC * smoothstep(0.006f, 0.015f, dc)
-                        val ta = (da * 0.28f) * (1f - signalT) + (mkA * bloom) * signalT
-                        val tb = (db * 0.28f) * (1f - signalT) + (mkB * bloom) * signalT
-                        aMk += wz * (muRa[z] * zoneCastScale + ta)
-                        bMk += wz * (muRb[z] * zoneCastScale + tb)
+                        val ta = (da * passthroughK) * (1f - signalT) + (mkA * bloom) * signalT
+                        val tb = (db * passthroughK) * (1f - signalT) + (mkB * bloom) * signalT
+
+                        var zoneA = maR * zoneCastScale + ta
+                        var zoneB = mbR * zoneCastScale + tb
+
+                        if (role == RegionRole.BACKGROUND) {
+                            val muC = max(
+                                sqrt(maR * maR + mbR * mbR),
+                                sqrt(taCenter * taCenter + tbCenter * tbCenter)
+                            )
+                            if (muC > 0.07f) {
+                                val bgChromaT = smoothstep(0.025f, 0.085f, cIn) * (1f - smoothstep(0.72f, 0.92f, lOut))
+                                zoneA = aIn + (zoneA - aIn) * bgChromaT
+                                zoneB = bIn + (zoneB - bIn) * bgChromaT
+                            }
+                        }
+
+                        aMk += wz * zoneA
+                        bMk += wz * zoneB
                     }
 
-                    if (lOut > 0.78f && cIn < 0.035f) {
-                        val hiGuard = smoothstep(0.78f, 0.96f, lOut) * (1f - smoothstep(0.01f, 0.035f, cIn))
-                        aMk *= 1f - hiGuard * 0.55f
-                        bMk *= 1f - hiGuard * 0.55f
+                    if (lOut > 0.76f && cIn < 0.035f) {
+                        val hiGuard = smoothstep(0.76f, 0.95f, lOut) * (1f - smoothstep(0.01f, 0.035f, cIn))
+                        aMk *= 1f - hiGuard * 0.60f
+                        bMk *= 1f - hiGuard * 0.60f
                     }
 
                     var aOut = aMk; var bOut = bMk
-                    if (hasTgtSkin && aIn > 0.0068f && bIn > -0.001f && lIn > 0.42f && lIn < 0.97f) {
+                    if (hasTgtSkin && aIn > 0.0068f && bIn > -0.001f && lIn > 0.32f && lIn < 0.96f) {
                         val angIn = atan2(bIn, aIn)
-                        if (angIn > 0.12f && angIn < 0.92f) {
-                            val wSk = smoothstep(0.0068f, 0.0105f, aIn) *
-                                smoothstep(0.42f, 0.56f, lIn) *
-                                (1f - smoothstep(0.91f, 0.98f, lIn)) *
-                                (1f - smoothstep(0.72f, 0.92f, angIn))
+                        if (angIn > 0.12f && angIn < 0.96f) {
+                            val wSk = smoothstep(0.0068f, 0.014f, aIn) *
+                                smoothstep(0.32f, 0.50f, lIn) *
+                                (1f - smoothstep(0.88f, 0.97f, lIn)) *
+                                (1f - smoothstep(0.72f, 0.96f, angIn))
                             if (wSk > 0.02f) {
-                                val minA = refSkinMeanA?.coerceIn(0.030f, 0.044f) ?: 0.032f
+                                if (role == RegionRole.SUBJECT && refSkinAnchor != null && tgtSkinAnchor != null) {
+                                    val ra = refSkinAnchor[1]; val rb = refSkinAnchor[2]
+                                    val taSk = tgtSkinAnchor[1]; val tbSk = tgtSkinAnchor[2]
+                                    val distSk = sqrt((aIn - taSk) * (aIn - taSk) + (bIn - tbSk) * (bIn - tbSk))
+                                    val wDirect = wSk * (1f - smoothstep(0.025f, 0.085f, distSk))
+                                    val goalA = (aIn + (ra - taSk) * 0.85f).coerceIn(0.018f, 0.075f)
+                                    val goalB = (bIn + (rb - tbSk) * 0.85f).coerceIn(0.008f, 0.095f)
+                                    aOut += (goalA - aOut) * wDirect * 0.82f
+                                    bOut += (goalB - bOut) * wDirect * 0.82f
+                                }
+                                val minA = refSkinMean?.first?.coerceIn(0.026f, 0.044f) ?: 0.030f
                                 if (aOut < minA) aOut += (minA - aOut) * wSk * 0.85f
                                 if (bOut < 0.008f) bOut += (0.011f - bOut) * wSk * 0.75f
                                 val cSk = sqrt(aOut * aOut + bOut * bOut)
@@ -847,7 +1288,155 @@ object AiColorMatchEngine {
                 }
             }
         }
-        return Triple(lut, palette, isFlat)
+        return lut to isFlat
+    }
+
+    private fun buildDualMatchLutsFromPixels(
+        refPixels: IntArray,
+        refW: Int,
+        refH: Int,
+        refFaces: List<FaceRect>,
+        tgtPixels: IntArray,
+        tgtW: Int,
+        tgtH: Int,
+        tgtFaces: List<FaceRect>,
+        forceRawFlat: Boolean?
+    ): MatchDualLutOutput {
+        val refSem = extractSemanticSamples(refPixels, refW, refH, refFaces)
+        val tgtSem = extractSemanticSamples(tgtPixels, tgtW, tgtH, tgtFaces)
+
+        val refLabs = FloatArray(refSem.all.size * 3)
+        val labTmp = FloatArray(3)
+        for (p in 0 until refSem.all.size) {
+            srgbToOklab(refSem.all.r[p], refSem.all.g[p], refSem.all.b[p], labTmp)
+            refLabs[p * 3] = labTmp[0]; refLabs[p * 3 + 1] = labTmp[1]; refLabs[p * 3 + 2] = labTmp[2]
+        }
+        val palette = extractPaletteFromLabs(refLabs, refSem.all.size, 10)
+
+        val hasSemanticSplit = refSem.bg.size >= 160 &&
+            refSem.subj.size >= 120 &&
+            tgtSem.bg.size >= 160 &&
+            tgtSem.subj.size >= 120
+
+        var mainLut: FloatArray
+        var bgLut: FloatArray
+        val isFlat: Boolean
+
+        if (hasSemanticSplit) {
+            val (sLut, sFlat) = buildMatchLutForRole(
+                refSem.subj, tgtSem.subj,
+                refSem.faceSkinMedianLab, tgtSem.faceSkinMedianLab,
+                forceRawFlat, RegionRole.SUBJECT
+            )
+            val (bLut, _) = buildMatchLutForRole(
+                refSem.bg, tgtSem.bg,
+                null, null,
+                SomeFlatFallback(forceRawFlat, sFlat), RegionRole.BACKGROUND
+            )
+            mainLut = sLut
+            bgLut = bLut
+            isFlat = sFlat
+        } else {
+            val (uLut, uFlat) = buildMatchLutForRole(
+                refSem.all, tgtSem.all,
+                refSem.faceSkinMedianLab, tgtSem.faceSkinMedianLab,
+                forceRawFlat, RegionRole.UNIFIED
+            )
+            mainLut = uLut
+            bgLut = FloatArray(0)
+            isFlat = uFlat
+        }
+
+        val expectedLen = MATCH_LUT_DIM * MATCH_LUT_DIM * MATCH_LUT_DIM * 3
+        if (hasSemanticSplit && mainLut.size == expectedLen && bgLut.size == expectedLen) {
+            var refBgCSum = 0.0
+            for (p in 0 until refSem.bg.size) {
+                srgbToOklab(refSem.bg.r[p], refSem.bg.g[p], refSem.bg.b[p], labTmp)
+                refBgCSum += sqrt(labTmp[1] * labTmp[1] + labTmp[2] * labTmp[2])
+            }
+            var tgtBgASum = 0.0; var tgtBgBSum = 0.0; var tgtBgCSum = 0.0
+            for (p in 0 until tgtSem.bg.size) {
+                srgbToOklab(tgtSem.bg.r[p], tgtSem.bg.g[p], tgtSem.bg.b[p], labTmp)
+                tgtBgASum += labTmp[1]; tgtBgBSum += labTmp[2]
+                tgtBgCSum += sqrt(labTmp[1] * labTmp[1] + labTmp[2] * labTmp[2])
+            }
+            val meanCBgR = (refBgCSum / max(1, refSem.bg.size)).toFloat()
+            val meanCBgT = (tgtBgCSum / max(1, tgtSem.bg.size)).toFloat()
+            if (meanCBgR > 0.10f && meanCBgT > 0.10f) {
+                val dirA = (tgtBgASum / max(1, tgtSem.bg.size)).toFloat()
+                val dirB = (tgtBgBSum / max(1, tgtSem.bg.size)).toFloat()
+                val dirLen = max(1e-5f, sqrt(dirA * dirA + dirB * dirB))
+                val ua = dirA / dirLen
+                val ub = dirB / dirLen
+                val d = MATCH_LUT_DIM
+                val denom = (d - 1).toFloat()
+                for (bi in 0 until d) {
+                    val bf = bi / denom
+                    for (gi in 0 until d) {
+                        val gf = gi / denom
+                        for (ri in 0 until d) {
+                            val rf = ri / denom
+                            srgbToOklab(rf, gf, bf, labTmp)
+                            val proj = labTmp[1] * ua + labTmp[2] * ub
+                            if (proj > 0.055f) {
+                                val wWall = smoothstep(0.055f, 0.13f, proj)
+                                val idx = (bi * d * d + gi * d + ri) * 3
+                                for (c in 0 until 3) {
+                                    mainLut[idx + c] += (bgLut[idx + c] - mainLut[idx + c]) * wWall
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return MatchDualLutOutput(mainLut, bgLut, palette, isFlat)
+    }
+
+    private fun SomeFlatFallback(forceRawFlat: Boolean?, subjectFlat: Boolean): Boolean =
+        forceRawFlat ?: subjectFlat
+
+    private fun inferGridDims(size: Int): Pair<Int, Int> {
+        if (size <= 0) return 0 to 0
+        val root = floor(sqrt(size.toDouble())).toInt().coerceAtLeast(1)
+        for (h in root downTo 1) {
+            if (size % h == 0) return (size / h) to h
+        }
+        return size to 1
+    }
+
+    /** Pure Kotlin pixel-array entry point with explicit dimensions (JVM unit-testable). */
+    fun matchPixelsToReference(
+        refPixels: IntArray,
+        refW: Int,
+        refH: Int,
+        targetPixels: IntArray,
+        tgtW: Int,
+        tgtH: Int,
+        targetParams: DevelopParams,
+        forceRawFlat: Boolean? = null,
+        refName: String = "Reference"
+    ): DevelopParams {
+        val out = buildDualMatchLutsFromPixels(
+            refPixels, refW, refH, emptyList(),
+            targetPixels, tgtW, tgtH, emptyList(),
+            forceRawFlat
+        )
+        val expectedLen = MATCH_LUT_DIM * MATCH_LUT_DIM * MATCH_LUT_DIM * 3
+        val lutOk = out.mainLut.size == expectedLen
+        val bgOk = lutOk && out.bgLut.size == expectedLen
+
+        return targetParams.copy(
+            matchLutDim = if (lutOk) MATCH_LUT_DIM else 0,
+            matchLutData = if (lutOk) out.mainLut else FloatArray(0),
+            matchBgLutData = if (bgOk) out.bgLut else FloatArray(0),
+            matchToneAmount = if (lutOk && targetParams.hasColorMatchLut()) targetParams.matchToneAmount.coerceIn(0f, 100f) else 100f,
+            matchColorAmount = if (lutOk && targetParams.hasColorMatchLut()) targetParams.matchColorAmount.coerceIn(0f, 100f) else 100f,
+            matchRawFlat = out.isFlat,
+            matchPalette = out.palette,
+            matchRefName = refName
+        )
     }
 
     /** Pure Kotlin pixel-array entry point (JVM unit-testable without Android Bitmap dependency). */
@@ -858,17 +1447,12 @@ object AiColorMatchEngine {
         forceRawFlat: Boolean? = null,
         refName: String = "Reference"
     ): DevelopParams {
-        val (lutData, palette, isFlat) = buildMatchLutFromPixels(refPixels, targetPixels, forceRawFlat)
-        val lutOk = lutData.size == MATCH_LUT_DIM * MATCH_LUT_DIM * MATCH_LUT_DIM * 3
-
-        return targetParams.copy(
-            matchLutDim = if (lutOk) MATCH_LUT_DIM else 0,
-            matchLutData = if (lutOk) lutData else FloatArray(0),
-            matchToneAmount = if (lutOk && targetParams.hasColorMatchLut()) targetParams.matchToneAmount.coerceIn(0f, 100f) else 100f,
-            matchColorAmount = if (lutOk && targetParams.hasColorMatchLut()) targetParams.matchColorAmount.coerceIn(0f, 100f) else 100f,
-            matchRawFlat = isFlat,
-            matchPalette = palette,
-            matchRefName = refName
+        val (rw, rh) = inferGridDims(refPixels.size)
+        val (tw, th) = inferGridDims(targetPixels.size)
+        return matchPixelsToReference(
+            refPixels, rw, rh,
+            targetPixels, tw, th,
+            targetParams, forceRawFlat, refName
         )
     }
 
@@ -893,10 +1477,11 @@ object AiColorMatchEngine {
         } else {
             refSmall
         }
-        // Render pre-LUT baseline using user's own Develop parameters without hijacking Basic sliders
         val refPx = IntArray(renderedRef.width * renderedRef.height).also {
             renderedRef.getPixels(it, 0, renderedRef.width, 0, 0, renderedRef.width, renderedRef.height)
         }
+        val refFaces = detectFaceRects(renderedRef)
+
         val baseOnlyParams = targetParams.clearColorMatch().copy(vignetteAmount = 0f, grainAmount = 0f)
         val renderedTgt = KotlinPv2012Engine.render(
             tgtSmall,
@@ -907,23 +1492,31 @@ object AiColorMatchEngine {
         val renderedTgtPx = IntArray(renderedTgt.width * renderedTgt.height).also {
             renderedTgt.getPixels(it, 0, renderedTgt.width, 0, 0, renderedTgt.width, renderedTgt.height)
         }
+        val tgtFaces = detectFaceRects(renderedTgt)
 
-        val (lutData, palette, isFlat) = buildMatchLutFromPixels(refPx, renderedTgtPx, forceRawFlat)
+        val out = buildDualMatchLutsFromPixels(
+            refPx, renderedRef.width, renderedRef.height, refFaces,
+            renderedTgtPx, renderedTgt.width, renderedTgt.height, tgtFaces,
+            forceRawFlat
+        )
         if (renderedRef !== refSmall && !renderedRef.isRecycled) renderedRef.recycle()
         if (refSmall !== refBitmap && !refSmall.isRecycled) refSmall.recycle()
         if (!renderedTgt.isRecycled) renderedTgt.recycle()
         if (tgtSmall !== targetBitmap && !tgtSmall.isRecycled) tgtSmall.recycle()
 
-        val lutOk = lutData.size == MATCH_LUT_DIM * MATCH_LUT_DIM * MATCH_LUT_DIM * 3
+        val expectedLen = MATCH_LUT_DIM * MATCH_LUT_DIM * MATCH_LUT_DIM * 3
+        val lutOk = out.mainLut.size == expectedLen
+        val bgOk = lutOk && out.bgLut.size == expectedLen
         return targetParams.copy(
             clarity = if (refParams != null) (targetParams.clarity * 0.5f + refParams.clarity * 0.5f).coerceIn(-100f, 100f) else targetParams.clarity,
             dehaze = if (refParams != null) (targetParams.dehaze * 0.5f + refParams.dehaze * 0.5f).coerceIn(-100f, 100f) else targetParams.dehaze,
             matchLutDim = if (lutOk) MATCH_LUT_DIM else 0,
-            matchLutData = if (lutOk) lutData else FloatArray(0),
+            matchLutData = if (lutOk) out.mainLut else FloatArray(0),
+            matchBgLutData = if (bgOk) out.bgLut else FloatArray(0),
             matchToneAmount = if (lutOk && targetParams.hasColorMatchLut()) targetParams.matchToneAmount.coerceIn(0f, 100f) else 100f,
             matchColorAmount = if (lutOk && targetParams.hasColorMatchLut()) targetParams.matchColorAmount.coerceIn(0f, 100f) else 100f,
-            matchRawFlat = isFlat,
-            matchPalette = palette,
+            matchRawFlat = out.isFlat,
+            matchPalette = out.palette,
             matchRefName = refName
         )
     }

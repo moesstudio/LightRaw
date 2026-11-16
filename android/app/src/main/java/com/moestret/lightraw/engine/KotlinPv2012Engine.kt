@@ -261,6 +261,11 @@ object KotlinPv2012Engine {
         val blurCenterY = (params.lensBlurFocalCenter / 100f).coerceIn(0.05f, 0.95f)
         val hasMatchLut = params.hasColorMatchLut() &&
             (params.matchToneAmount > 0.1f || params.matchColorAmount > 0.1f)
+        val semanticGrid = if (hasMatchLut && params.hasColorMatchBgLut()) {
+            AiColorMatchEngine.extractSemanticGrid(srcPixels, w, h)
+        } else {
+            null
+        }
 
         val sliceCount = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
         val rowsPerSlice = (h + sliceCount - 1) / sliceCount
@@ -518,14 +523,27 @@ object KotlinPv2012Engine {
                             params.cgGlobalLum) * 0.0018f
                         r += gradeLumAdd; g += gradeLumAdd; b += gradeLumAdd
 
-                        // Reference Color & Tone Match 3D LUT (`Tonal %` + `Warna %` in OKLab)
+                        // Reference Color & Tone Match Dual-LUT (`Subject/Main` + `Background` blended by AI Subject Mask)
                         if (!params.convertToGrayscale &&
                             params.cameraProfile != CameraProfile.MONOCHROME &&
                             hasMatchLut
                         ) {
-                            AiColorMatchEngine.applyColorMatchLut(
+                            val subjW = if (semanticGrid != null) {
+                                AiColorMatchEngine.sampleBilinear(
+                                    semanticGrid.subjectWeights,
+                                    semanticGrid.width,
+                                    semanticGrid.height,
+                                    nx,
+                                    ny
+                                )
+                            } else {
+                                1f
+                            }
+                            AiColorMatchEngine.applyColorMatchLutSemantic(
                                 r, g, b,
                                 params.matchLutData,
+                                if (semanticGrid != null) params.matchBgLutData else null,
+                                subjW,
                                 params.matchLutDim,
                                 params.matchToneAmount,
                                 params.matchColorAmount,

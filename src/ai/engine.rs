@@ -141,9 +141,27 @@ pub fn compute_ai_semantics(
 
     let use_hardware_ai = tier != AiHardwareTier::HeuristicsOnly;
 
-    // 1. Prepare RGBA buffer for hardware Vision / ANE input (downsampled to max 512x512 for optimal inference latency)
+    // 1. Prepare RGBA buffer for hardware Vision / ANE input (downsampled to max 512x512, exposure-normalized)
     let ai_in_w = width.min(512).max(64);
     let ai_in_h = height.min(512).max(64);
+    let mut lum_sum = 0.0f64;
+    let mut lum_cnt = 0usize;
+    let sample_step = ((width * height) as usize / 2048).max(1);
+    for i in (0..(width * height) as usize).step_by(sample_step) {
+        let p = i * 3;
+        if p + 2 < linear_rgb.len() {
+            let l = (0.2126 * linear_rgb[p] + 0.7152 * linear_rgb[p + 1] + 0.0722 * linear_rgb[p + 2]).max(0.0);
+            lum_sum += l as f64;
+            lum_cnt += 1;
+        }
+    }
+    let mean_lin = (lum_sum / lum_cnt.max(1) as f64) as f32;
+    let ai_exp_gain = if mean_lin > 0.002 && mean_lin < 0.22 {
+        (0.20 / mean_lin).clamp(1.0, 5.0)
+    } else {
+        1.0
+    };
+
     let mut rgba_buf = vec![255u8; (ai_in_w * ai_in_h * 4) as usize];
 
     for y in 0..ai_in_h {
@@ -155,9 +173,9 @@ pub fn compute_ai_semantics(
             let src_i = (sy * width as usize + sx) * 3;
             let dst_i = (y * ai_in_w + x) as usize * 4;
             if src_i + 2 < linear_rgb.len() {
-                rgba_buf[dst_i] = (linear_to_srgb(linear_rgb[src_i]).clamp(0.0, 1.0) * 255.0) as u8;
-                rgba_buf[dst_i + 1] = (linear_to_srgb(linear_rgb[src_i + 1]).clamp(0.0, 1.0) * 255.0) as u8;
-                rgba_buf[dst_i + 2] = (linear_to_srgb(linear_rgb[src_i + 2]).clamp(0.0, 1.0) * 255.0) as u8;
+                rgba_buf[dst_i] = (linear_to_srgb(linear_rgb[src_i] * ai_exp_gain).clamp(0.0, 1.0) * 255.0) as u8;
+                rgba_buf[dst_i + 1] = (linear_to_srgb(linear_rgb[src_i + 1] * ai_exp_gain).clamp(0.0, 1.0) * 255.0) as u8;
+                rgba_buf[dst_i + 2] = (linear_to_srgb(linear_rgb[src_i + 2] * ai_exp_gain).clamp(0.0, 1.0) * 255.0) as u8;
                 rgba_buf[dst_i + 3] = 255;
             }
         }
@@ -227,7 +245,59 @@ pub fn compute_ai_semantics(
         }
     }
 
-    // 2. Synthesize Sky and Depth if not provided by hardware, plus graceful heuristic fallback
+    // 2. Compute Border-Backdrop Reference Model for heuristic Subject/Background separation on non-macOS targets
+    let mut border_rs = Vec::new();
+    let mut border_gs = Vec::new();
+    let mut border_bs = Vec::new();
+    let mut perim_rgbs = Vec::new();
+    if !hw_subject_success {
+        for sy in 0..sem_h {
+            let ny = sy as f32 / sem_h.max(1) as f32;
+            let py = ((ny * (height.saturating_sub(1)) as f32) as usize).min(height.saturating_sub(1) as usize);
+            for sx in 0..sem_w {
+                let nx = sx as f32 / sem_w.max(1) as f32;
+                let is_top_or_side = ny < 0.08 || nx < 0.06 || nx > 0.94;
+                let is_bottom = ny > 0.92;
+                if is_top_or_side || is_bottom {
+                    let px = ((nx * (width.saturating_sub(1)) as f32) as usize).min(width.saturating_sub(1) as usize);
+                    let src_idx = (py * width as usize + px) * 3;
+                    if src_idx + 2 < linear_rgb.len() {
+                        let rs = linear_to_srgb(linear_rgb[src_idx] * ai_exp_gain).clamp(0.0, 1.0);
+                        let gs = linear_to_srgb(linear_rgb[src_idx + 1] * ai_exp_gain).clamp(0.0, 1.0);
+                        let bs = linear_to_srgb(linear_rgb[src_idx + 2] * ai_exp_gain).clamp(0.0, 1.0);
+                        perim_rgbs.push((rs, gs, bs));
+                        if is_top_or_side {
+                            border_rs.push(rs);
+                            border_gs.push(gs);
+                            border_bs.push(bs);
+                        }
+                    }
+                }
+            }
+        }
+        border_rs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        border_gs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        border_bs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let (bg_r, bg_g, bg_b) = if !border_rs.is_empty() {
+        let m = border_rs.len() / 2;
+        (border_rs[m], border_gs[m], border_bs[m])
+    } else {
+        (0.0, 0.0, 0.0)
+    };
+    let coherent_backdrop = if !perim_rgbs.is_empty() && !border_rs.is_empty() {
+        let inliers = perim_rgbs
+            .iter()
+            .filter(|&&(r, g, b)| {
+                ((r - bg_r).powi(2) + (g - bg_g).powi(2) + (b - bg_b).powi(2)).sqrt() <= 0.22
+            })
+            .count();
+        (inliers as f32 / perim_rgbs.len() as f32) >= 0.48
+    } else {
+        false
+    };
+
+    // Synthesize Sky and Depth if not provided by hardware, plus border-aware heuristic fallback
     for sy in 0..sem_h {
         let ny = sy as f32 / sem_h.max(1) as f32;
         let py = ((ny * (height.saturating_sub(1)) as f32) as usize).min(height.saturating_sub(1) as usize);
@@ -240,23 +310,36 @@ pub fn compute_ai_semantics(
             } else {
                 (0.0, 0.0, 0.0)
             };
-            let r = linear_to_srgb(r_lin).clamp(0.0, 1.0);
-            let g = linear_to_srgb(g_lin).clamp(0.0, 1.0);
-            let b = linear_to_srgb(b_lin).clamp(0.0, 1.0);
+            let r = linear_to_srgb(r_lin * ai_exp_gain).clamp(0.0, 1.0);
+            let g = linear_to_srgb(g_lin * ai_exp_gain).clamp(0.0, 1.0);
+            let b = linear_to_srgb(b_lin * ai_exp_gain).clamp(0.0, 1.0);
             let (h, s, l) = rgb_to_hsl(r, g, b);
 
             let dst_idx = (sy * sem_w + sx) as usize;
 
-            // If hardware subject segmentation succeeded, use it; otherwise compute heuristic
+            // If hardware subject segmentation succeeded, keep ANE soft alpha + ensure face/person pixels included
             let subj_v = if hw_subject_success {
-                subject_q[dst_idx] as f32 / 255.0
-            } else {
-                let center_dist = ((nx - 0.5).powi(2) * 1.3 + (ny - 0.54).powi(2) * 1.1).sqrt();
-                let warmth = ((1.0 - ((h - 28.0).abs() / 180.0)).max(0.0)) * s;
-                let subj = (1.0 - center_dist * 1.85).clamp(0.0, 1.0) * (0.65 + 0.55 * warmth);
-                let sv = smoothstep(0.18, 0.55, subj);
+                let mut sv = subject_q[dst_idx] as f32 / 255.0;
+                if hw_people_success && people_q[dst_idx] > 0 {
+                    sv = sv.max(people_q[dst_idx] as f32 / 255.0);
+                    subject_q[dst_idx] = (sv * 255.0) as u8;
+                }
+                sv
+            } else if coherent_backdrop {
+                let bg_dist = ((r - bg_r).powi(2) + (g - bg_g).powi(2) + (b - bg_b).powi(2)).sqrt();
+                let fg_from_bg = smoothstep(0.10, 0.28, bg_dist);
+                let center_dist = ((nx - 0.5).powi(2) * 1.2 + (ny - 0.56).powi(2) * 0.95).sqrt();
+                let center_prior = (1.0 - center_dist * 1.45).clamp(0.0, 1.0);
+                let is_skin = (h <= 45.0 || h >= 332.0) && s >= 0.08 && s <= 0.78 && l >= 0.14 && l <= 0.90;
+                let cue = fg_from_bg * (0.62 + 0.38 * center_prior) + if is_skin { 0.45 } else { 0.0 };
+                let sv = smoothstep(0.28, 0.60, cue);
                 subject_q[dst_idx] = (sv * 255.0) as u8;
                 sv
+            } else {
+                // Non-coherent backdrop (e.g. wide landscape or stripes): treat frame uniformly
+                // instead of carving an arbitrary circle that drops edge shadows/highlights.
+                subject_q[dst_idx] = 255;
+                1.0
             };
 
             // Sky Mask: Grounded by (1.0 - subject) to guarantee zero subject spillover

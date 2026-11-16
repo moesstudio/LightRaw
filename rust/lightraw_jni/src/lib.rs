@@ -311,6 +311,10 @@ pub fn parse_develop_params_json(json_str: &str) -> DevelopParams {
     if dim >= 2 && lut.len() == dim * dim * dim * 3 {
         p.match_lut_dim = dim as u8;
         p.match_lut_data = lut;
+        let bg_lut = decode_lut_u16_b64(s("matchBgLutB64"), dim);
+        if bg_lut.len() == dim * dim * dim * 3 {
+            p.match_bg_lut_data = bg_lut;
+        }
     }
     p.match_tone_amount = f("matchToneAmount", 100.0);
     p.match_color_amount = f("matchColorAmount", 100.0);
@@ -325,7 +329,7 @@ pub extern "system" fn Java_com_moestret_lightraw_engine_NativeBridge_nativeVers
     env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    new_jstring(&mut { env }, "LightRaw Rust Core 1.2.2 (PV2012)")
+    new_jstring(&mut { env }, "LightRaw Rust Core 1.2.3 (PV2012)")
 }
 
 /// Processes RGBA8 input using LightRaw's full non-destructive PV2012 Rust pipeline.
@@ -511,7 +515,8 @@ mod tests {
                 "temperature": 6850,
                 "tint": 12,
                 "matchLutDim": 2,
-                "matchLutB64": "{}",
+                "matchLutB64": "{0}",
+                "matchBgLutB64": "{0}",
                 "matchToneAmount": 82,
                 "matchColorAmount": 91,
                 "matchRawFlat": true,
@@ -526,8 +531,10 @@ mod tests {
         assert_eq!(parsed.white_balance, WhiteBalanceMode::Custom);
         assert!((parsed.temperature - 6850.0).abs() < 1e-2);
         assert!(parsed.has_color_match_lut());
+        assert!(parsed.has_color_match_bg_lut());
         assert_eq!(parsed.match_lut_dim, 2);
         assert!((parsed.match_lut_data[0] - 1.0).abs() < 1e-4);
+        assert!((parsed.match_bg_lut_data[0] - 1.0).abs() < 1e-4);
         assert!((parsed.match_lut_data[1] - 0.0).abs() < 1e-4);
         assert!((parsed.match_tone_amount - 82.0).abs() < 1e-4);
         assert!((parsed.match_color_amount - 91.0).abs() < 1e-4);
