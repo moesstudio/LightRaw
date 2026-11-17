@@ -59,88 +59,99 @@ object XmpPresetCodec {
             grayArr[i] = extractFloat(xml, "crs:GrayMixer${bandNames[i]}", 0f)
         }
 
-        val name = extractAttr(xml, "crs:PresetType")?.let {
-            Regex("""<rdf:li xml:lang="x-default">([^<]+)</rdf:li>""").find(xml)?.groupValues?.getOrNull(1)
-        } ?: Regex("""<crs:Name>.*?<rdf:li[^>]*>([^<]+)</rdf:li>""", RegexOption.DOT_MATCHES_ALL)
-            .find(xml)?.groupValues?.getOrNull(1)
-        ?: fallbackName
+        val lookRegex = Regex("""<crs:Look\b[^>]*>.*?</crs:Look>""", RegexOption.DOT_MATCHES_ALL)
+        val lookBlock = lookRegex.find(xml)?.value
+        val mainXml = if (lookBlock != null) xml.replace(lookBlock, "") else xml
 
-        val wbStr = extractAttr(xml, "crs:WhiteBalance") ?: "As Shot"
+        val name = Regex("""<crs:Name>\s*<rdf:Alt>\s*<rdf:li[^>]*>([^<]+)</rdf:li>""", RegexOption.DOT_MATCHES_ALL)
+            .find(mainXml)?.groupValues?.getOrNull(1)
+            ?: extractAttr(mainXml, "crs:Name")
+            ?: fallbackName
+
+        val wbStr = extractAttr(mainXml, "crs:WhiteBalance") ?: "As Shot"
         val wbMode = WhiteBalanceMode.entries.firstOrNull {
             it.label.equals(wbStr, ignoreCase = true) || it.name.equals(wbStr, ignoreCase = true)
         } ?: WhiteBalanceMode.AS_SHOT
 
-        val profStr = extractAttr(xml, "crs:CameraProfile") ?: ""
+        val lookName = lookBlock?.let { extractAttr(it, "crs:Name") } ?: ""
+        val profStr = extractAttr(mainXml, "crs:CameraProfile") ?: lookName
         val profile = when {
             profStr.contains("Vivid", ignoreCase = true) -> CameraProfile.VIVID
             profStr.contains("Landscape", ignoreCase = true) -> CameraProfile.LANDSCAPE
             profStr.contains("Portrait", ignoreCase = true) -> CameraProfile.PORTRAIT
             profStr.contains("Neutral", ignoreCase = true) -> CameraProfile.NEUTRAL
             profStr.contains("Monochrome", ignoreCase = true) -> CameraProfile.MONOCHROME
+            profStr.contains("Film", ignoreCase = true) -> CameraProfile.FILM
             else -> CameraProfile.NATURAL
         }
 
+        val asShotTempRef = extractAttr(mainXml, "crs:AsShotTemperature")?.replace(',', '.')?.toFloatOrNull()
+            ?.takeIf { it in 1500f..50000f }
+        val asShotTintRef = extractAttr(mainXml, "crs:AsShotTint")?.replace(',', '.')?.toFloatOrNull()
+            ?.coerceIn(-150f, 150f)
+        val nativeWb = extractAttr(mainXml, "crs:LightRawNativeWB").equals("True", ignoreCase = true)
+
         val params = DevelopParams(
-            convertToGrayscale = extractAttr(xml, "crs:ConvertToGrayscale").equals("True", ignoreCase = true),
+            convertToGrayscale = extractAttr(mainXml, "crs:ConvertToGrayscale").equals("True", ignoreCase = true),
             cameraProfile = profile,
             whiteBalance = wbMode,
-            temperature = extractFloat(xml, "crs:Temperature", 5500f).coerceIn(2000f, 50000f),
-            tint = extractFloat(xml, "crs:Tint", 0f).coerceIn(-150f, 150f),
-            exposure = extractFloat(xml, "crs:Exposure2012", 0f).coerceIn(-5f, 5f),
-            contrast = extractFloat(xml, "crs:Contrast2012", 0f).coerceIn(-100f, 100f),
-            highlights = extractFloat(xml, "crs:Highlights2012", 0f).coerceIn(-100f, 100f),
-            shadows = extractFloat(xml, "crs:Shadows2012", 0f).coerceIn(-100f, 100f),
-            whites = extractFloat(xml, "crs:Whites2012", 0f).coerceIn(-100f, 100f),
-            blacks = extractFloat(xml, "crs:Blacks2012", 0f).coerceIn(-100f, 100f),
-            texture = extractFloat(xml, "crs:Texture", 0f).coerceIn(-100f, 100f),
-            clarity = extractFloat(xml, "crs:Clarity2012", 0f).coerceIn(-100f, 100f),
-            dehaze = extractFloat(xml, "crs:Dehaze", 0f).coerceIn(-100f, 100f),
-            vibrance = extractFloat(xml, "crs:Vibrance", 0f).coerceIn(-100f, 100f),
-            saturation = extractFloat(xml, "crs:Saturation", 0f).coerceIn(-100f, 100f),
-            parametricHighlights = extractFloat(xml, "crs:ParametricHighlights", 0f),
-            parametricLights = extractFloat(xml, "crs:ParametricLights", 0f),
-            parametricDarks = extractFloat(xml, "crs:ParametricDarks", 0f),
-            parametricShadows = extractFloat(xml, "crs:ParametricShadows", 0f),
-            toneCurveMaster = extractCurve(xml, "crs:ToneCurvePV2012") ?: DevelopParams.defaultLinearCurve(),
-            toneCurveRed = extractCurve(xml, "crs:ToneCurvePV2012Red") ?: DevelopParams.defaultLinearCurve(),
-            toneCurveGreen = extractCurve(xml, "crs:ToneCurvePV2012Green") ?: DevelopParams.defaultLinearCurve(),
-            toneCurveBlue = extractCurve(xml, "crs:ToneCurvePV2012Blue") ?: DevelopParams.defaultLinearCurve(),
+            temperature = extractFloat(mainXml, "crs:Temperature", 5500f).coerceIn(2000f, 50000f),
+            tint = extractFloat(mainXml, "crs:Tint", 0f).coerceIn(-150f, 150f),
+            exposure = extractFloat(mainXml, "crs:Exposure2012", 0f).coerceIn(-5f, 5f),
+            contrast = extractFloat(mainXml, "crs:Contrast2012", 0f).coerceIn(-100f, 100f),
+            highlights = extractFloat(mainXml, "crs:Highlights2012", 0f).coerceIn(-100f, 100f),
+            shadows = extractFloat(mainXml, "crs:Shadows2012", 0f).coerceIn(-100f, 100f),
+            whites = extractFloat(mainXml, "crs:Whites2012", 0f).coerceIn(-100f, 100f),
+            blacks = extractFloat(mainXml, "crs:Blacks2012", 0f).coerceIn(-100f, 100f),
+            texture = extractFloat(mainXml, "crs:Texture", 0f).coerceIn(-100f, 100f),
+            clarity = extractFloat(mainXml, "crs:Clarity2012", 0f).coerceIn(-100f, 100f),
+            dehaze = extractFloat(mainXml, "crs:Dehaze", 0f).coerceIn(-100f, 100f),
+            vibrance = extractFloat(mainXml, "crs:Vibrance", 0f).coerceIn(-100f, 100f),
+            saturation = extractFloat(mainXml, "crs:Saturation", 0f).coerceIn(-100f, 100f),
+            parametricHighlights = extractFloat(mainXml, "crs:ParametricHighlights", 0f),
+            parametricLights = extractFloat(mainXml, "crs:ParametricLights", 0f),
+            parametricDarks = extractFloat(mainXml, "crs:ParametricDarks", 0f),
+            parametricShadows = extractFloat(mainXml, "crs:ParametricShadows", 0f),
+            toneCurveMaster = extractCurve(mainXml, "crs:ToneCurvePV2012") ?: DevelopParams.defaultLinearCurve(),
+            toneCurveRed = extractCurve(mainXml, "crs:ToneCurvePV2012Red") ?: DevelopParams.defaultLinearCurve(),
+            toneCurveGreen = extractCurve(mainXml, "crs:ToneCurvePV2012Green") ?: DevelopParams.defaultLinearCurve(),
+            toneCurveBlue = extractCurve(mainXml, "crs:ToneCurvePV2012Blue") ?: DevelopParams.defaultLinearCurve(),
             hueAdjustment = hueArr,
             saturationAdjustment = satArr,
             luminanceAdjustment = lumArr,
             grayMixer = grayArr,
-            cgShadowHue = extractFloat(xml, "crs:SplitToningShadowHue", 0f),
-            cgShadowSat = extractFloat(xml, "crs:SplitToningShadowSaturation", 0f),
-            cgShadowLum = extractFloat(xml, "crs:ColorGradeShadowLum", 0f),
-            cgMidHue = extractFloat(xml, "crs:ColorGradeMidtoneHue", 0f),
-            cgMidSat = extractFloat(xml, "crs:ColorGradeMidtoneSat", 0f),
-            cgMidLum = extractFloat(xml, "crs:ColorGradeMidtoneLum", 0f),
-            cgHighHue = extractFloat(xml, "crs:SplitToningHighlightHue", 0f),
-            cgHighSat = extractFloat(xml, "crs:SplitToningHighlightSaturation", 0f),
-            cgHighLum = extractFloat(xml, "crs:ColorGradeHighlightLum", 0f),
-            cgGlobalHue = extractFloat(xml, "crs:ColorGradeGlobalHue", 0f),
-            cgGlobalSat = extractFloat(xml, "crs:ColorGradeGlobalSat", 0f),
-            cgGlobalLum = extractFloat(xml, "crs:ColorGradeGlobalLum", 0f),
-            cgBlending = extractFloat(xml, "crs:ColorGradeBlending", 50f),
-            cgBalance = extractFloat(xml, "crs:SplitToningBalance", 0f),
-            sharpness = extractFloat(xml, "crs:Sharpness", 20f).coerceIn(0f, 150f),
-            sharpenRadius = extractFloat(xml, "crs:SharpenRadius", 1.0f).coerceIn(0.5f, 3.0f),
-            luminanceNr = extractFloat(xml, "crs:LuminanceSmoothing", 0f).coerceIn(0f, 100f),
-            colorNr = extractFloat(xml, "crs:ColorNoiseReduction", 15f).coerceIn(0f, 100f),
-            vignetteAmount = extractFloat(xml, "crs:PostCropVignetteAmount", 0f).coerceIn(-100f, 100f),
-            vignetteMidpoint = extractFloat(xml, "crs:PostCropVignetteMidpoint", 50f).coerceIn(0f, 100f),
-            vignetteRoundness = extractFloat(xml, "crs:PostCropVignetteRoundness", 0f).coerceIn(-100f, 100f),
-            vignetteFeather = extractFloat(xml, "crs:PostCropVignetteFeather", 50f).coerceIn(0f, 100f),
-            grainAmount = extractFloat(xml, "crs:GrainAmount", 0f).coerceIn(0f, 100f),
-            grainSize = extractFloat(xml, "crs:GrainSize", 25f).coerceIn(0f, 100f),
-            grainRoughness = extractFloat(xml, "crs:GrainFrequency", 50f).coerceIn(0f, 100f),
-            lensDistortion = extractFloat(xml, "crs:LensManualDistortionAmount", 0f).coerceIn(-100f, 100f),
-            perspectiveVertical = extractFloat(xml, "crs:PerspectiveVertical", 0f).coerceIn(-100f, 100f),
-            perspectiveHorizontal = extractFloat(xml, "crs:PerspectiveHorizontal", 0f).coerceIn(-100f, 100f),
-            perspectiveAspect = extractFloat(xml, "crs:PerspectiveAspect", 0f).coerceIn(-100f, 100f),
-            geometryScale = extractFloat(xml, "crs:PerspectiveScale", 100f).coerceIn(50f, 150f),
-            geometryOffsetX = extractFloat(xml, "crs:PerspectiveX", 0f).coerceIn(-100f, 100f),
-            geometryOffsetY = extractFloat(xml, "crs:PerspectiveY", 0f).coerceIn(-100f, 100f)
+            cgShadowHue = extractFloat(mainXml, "crs:SplitToningShadowHue", 0f),
+            cgShadowSat = extractFloat(mainXml, "crs:SplitToningShadowSaturation", 0f),
+            cgShadowLum = extractFloat(mainXml, "crs:ColorGradeShadowLum", 0f),
+            cgMidHue = extractFloat(mainXml, "crs:ColorGradeMidtoneHue", 0f),
+            cgMidSat = extractFloat(mainXml, "crs:ColorGradeMidtoneSat", 0f),
+            cgMidLum = extractFloat(mainXml, "crs:ColorGradeMidtoneLum", 0f),
+            cgHighHue = extractFloat(mainXml, "crs:SplitToningHighlightHue", 0f),
+            cgHighSat = extractFloat(mainXml, "crs:SplitToningHighlightSaturation", 0f),
+            cgHighLum = extractFloat(mainXml, "crs:ColorGradeHighlightLum", 0f),
+            cgGlobalHue = extractFloat(mainXml, "crs:ColorGradeGlobalHue", 0f),
+            cgGlobalSat = extractFloat(mainXml, "crs:ColorGradeGlobalSat", 0f),
+            cgGlobalLum = extractFloat(mainXml, "crs:ColorGradeGlobalLum", 0f),
+            cgBlending = extractFloat(mainXml, "crs:ColorGradeBlending", 50f),
+            cgBalance = extractFloat(mainXml, "crs:SplitToningBalance", 0f),
+            sharpness = extractFloat(mainXml, "crs:Sharpness", 20f).coerceIn(0f, 150f),
+            sharpenRadius = extractFloat(mainXml, "crs:SharpenRadius", 1.0f).coerceIn(0.5f, 3.0f),
+            luminanceNr = extractFloat(mainXml, "crs:LuminanceSmoothing", 0f).coerceIn(0f, 100f),
+            colorNr = extractFloat(mainXml, "crs:ColorNoiseReduction", 15f).coerceIn(0f, 100f),
+            vignetteAmount = extractFloat(mainXml, "crs:PostCropVignetteAmount", 0f).coerceIn(-100f, 100f),
+            vignetteMidpoint = extractFloat(mainXml, "crs:PostCropVignetteMidpoint", 50f).coerceIn(0f, 100f),
+            vignetteRoundness = extractFloat(mainXml, "crs:PostCropVignetteRoundness", 0f).coerceIn(-100f, 100f),
+            vignetteFeather = extractFloat(mainXml, "crs:PostCropVignetteFeather", 50f).coerceIn(0f, 100f),
+            grainAmount = extractFloat(mainXml, "crs:GrainAmount", 0f).coerceIn(0f, 100f),
+            grainSize = extractFloat(mainXml, "crs:GrainSize", 25f).coerceIn(0f, 100f),
+            grainRoughness = extractFloat(mainXml, "crs:GrainFrequency", 50f).coerceIn(0f, 100f),
+            lensDistortion = extractFloat(mainXml, "crs:LensManualDistortionAmount", 0f).coerceIn(-100f, 100f),
+            perspectiveVertical = extractFloat(mainXml, "crs:PerspectiveVertical", 0f).coerceIn(-100f, 100f),
+            perspectiveHorizontal = extractFloat(mainXml, "crs:PerspectiveHorizontal", 0f).coerceIn(-100f, 100f),
+            perspectiveAspect = extractFloat(mainXml, "crs:PerspectiveAspect", 0f).coerceIn(-100f, 100f),
+            geometryScale = extractFloat(mainXml, "crs:PerspectiveScale", 100f).coerceIn(50f, 150f),
+            geometryOffsetX = extractFloat(mainXml, "crs:PerspectiveX", 0f).coerceIn(-100f, 100f),
+            geometryOffsetY = extractFloat(mainXml, "crs:PerspectiveY", 0f).coerceIn(-100f, 100f)
         )
 
         return DevelopPreset(
@@ -149,7 +160,10 @@ object XmpPresetCodec {
             name = name.trim().ifEmpty { fallbackName },
             isUser = true,
             isFavorite = false,
-            params = params
+            params = params,
+            asShotTempRef = asShotTempRef,
+            asShotTintRef = asShotTintRef,
+            nativeLightRawWb = nativeWb
         )
     }
 
@@ -168,6 +182,15 @@ object XmpPresetCodec {
         sb.appendLine("""   crs:WhiteBalance="${escapeXml(p.whiteBalance.label)}"""")
         sb.appendLine("""   crs:Temperature="${p.temperature.toInt()}"""")
         sb.appendLine("""   crs:Tint="${p.tint.toInt()}"""")
+        preset.asShotTempRef?.let {
+            sb.appendLine("""   crs:AsShotTemperature="${it.toInt()}"""")
+        }
+        preset.asShotTintRef?.let {
+            sb.appendLine("""   crs:AsShotTint="${it.toInt()}"""")
+        }
+        if (preset.nativeLightRawWb) {
+            sb.appendLine("""   crs:LightRawNativeWB="True"""")
+        }
         sb.appendLine("""   crs:Exposure2012="${"%.2f".format(Locale.US, p.exposure)}"""")
         sb.appendLine("""   crs:Contrast2012="${p.contrast.toInt()}"""")
         sb.appendLine("""   crs:Highlights2012="${p.highlights.toInt()}"""")

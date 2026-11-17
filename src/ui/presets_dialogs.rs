@@ -389,6 +389,17 @@ pub fn render_create_preset_modal(app: &mut LightRawApp, ctx: &egui::Context) {
                         let _ = std::fs::create_dir_all(&out_dir);
                         let out_file = out_dir.join(format!("{}.xmp", safe_name));
 
+                        let active_raw_anchor = if !app.photos.is_empty() {
+                            let aid = app.active_photo_id;
+                            app.thumb_raw_cache
+                                .get(&aid)
+                                .or_else(|| app.raw_cache.get(&aid))
+                                .filter(|r| r.is_scene_referred)
+                                .map(|r| (r.as_shot_temp, r.as_shot_tint))
+                        } else {
+                            None
+                        };
+
                         let mut preset = DevelopPreset {
                             id,
                             category: group.clone(),
@@ -399,6 +410,9 @@ pub fn render_create_preset_modal(app: &mut LightRawApp, ctx: &egui::Context) {
                             mask: Some(app.create_preset_mask.clone()),
                             is_visible: true,
                             xmp_file_path: Some(out_file.display().to_string()),
+                            as_shot_temp_ref: active_raw_anchor.map(|a| a.0),
+                            as_shot_tint_ref: active_raw_anchor.map(|a| a.1),
+                            native_lightraw_wb: true,
                         };
 
                         let xml = export_preset_to_xmp(&preset);

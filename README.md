@@ -1,4 +1,4 @@
-# LightRaw 1.2.4
+# LightRaw 1.2.5
 
 <p align="center">
   <img src="assets/icon.png" width="160" height="160" alt="LightRaw Logo" />
@@ -67,12 +67,12 @@ Pre-built desktop installers and Android `.apk` builds are provided in [GitHub R
 | Platform | Installer / Package Type | File Name | Notes |
 | :--- | :--- | :--- | :--- |
 | **Android** | Android Package (`.apk`) | `LightRaw-Android-release.apk` / `LightRaw-Android-debug.apk` | Android 8.0+ (SDK 26+), Camera2 RAW + Offline Catalog |
-| **macOS** | Disk Image (`.dmg`) | `LightRaw-1.2.4-macOS.dmg` | Drag & Drop to `/Applications` |
-| **Windows** | Setup Executable (`.exe`) | `LightRaw-1.2.4-Windows-Setup.exe` | Inno Setup with file associations |
-| **Windows** | Windows Installer (`.msi`) | `LightRaw-1.2.4.msi` | Enterprise WiX package |
-| **Linux** | Debian Package (`.deb`) | `lightraw_1.2.4_amd64.deb` | Ubuntu, Debian, Linux Mint, Pop!_OS |
-| **Linux** | Universal AppImage | `LightRaw-1.2.4-x86_64.AppImage` | Portable binary for any Linux distro |
-| **Linux** | Compressed Tarball | `lightraw-1.2.4-linux-x86_64.tar.gz` | Standalone archive with desktop entry |
+| **macOS** | Disk Image (`.dmg`) | `LightRaw-1.2.5-macOS.dmg` | Drag & Drop to `/Applications` |
+| **Windows** | Setup Executable (`.exe`) | `LightRaw-1.2.5-Windows-Setup.exe` | Inno Setup with file associations |
+| **Windows** | Windows Installer (`.msi`) | `LightRaw-1.2.5.msi` | Enterprise WiX package |
+| **Linux** | Debian Package (`.deb`) | `lightraw_1.2.5_amd64.deb` | Ubuntu, Debian, Linux Mint, Pop!_OS |
+| **Linux** | Universal AppImage | `LightRaw-1.2.5-x86_64.AppImage` | Portable binary for any Linux distro |
+| **Linux** | Compressed Tarball | `lightraw-1.2.5-linux-x86_64.tar.gz` | Standalone archive with desktop entry |
 
 ---
 

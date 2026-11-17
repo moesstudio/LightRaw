@@ -3,7 +3,7 @@
 
 #define MyAppName "LightRaw"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.4"
+  #define MyAppVersion "1.2.5"
 #endif
 #define MyAppPublisher "Moestret"
 #define MyAppURL "https://github.com/moesstudio/LightRaw"

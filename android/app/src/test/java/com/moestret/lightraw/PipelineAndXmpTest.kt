@@ -374,4 +374,39 @@ class PipelineAndXmpTest {
             .applyTo(matched, DevelopParams())
         assertTrue(copied.hasColorMatchBgLut())
     }
+
+    @Test
+    fun xmpParsesAdobeLookProfileAndAsShotAnchorsWithoutNameCollision() {
+        val xml = """
+            <x:xmpmeta xmlns:x="adobe:ns:meta/">
+             <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+               crs:PresetType="Normal"
+               crs:WhiteBalance="Custom"
+               crs:Temperature="3936"
+               crs:Tint="+5"
+               crs:AsShotTemperature="5050"
+               crs:AsShotTint="5">
+               <crs:Name><rdf:Alt><rdf:li xml:lang="x-default">XII SMK 26</rdf:li></rdf:Alt></crs:Name>
+               <crs:Look>
+                <rdf:Description crs:Name="Adobe Portrait" crs:Amount="1">
+                 <crs:Group><rdf:Alt><rdf:li xml:lang="x-default">Profiles</rdf:li></rdf:Alt></crs:Group>
+                </rdf:Description>
+               </crs:Look>
+              </rdf:Description>
+             </rdf:RDF>
+            </x:xmpmeta>
+        """.trimIndent()
+        val parsed = XmpPresetCodec.parseXmp(xml, "Fallback")!!
+        assertEquals("XII SMK 26", parsed.name)
+        assertEquals(com.moestret.lightraw.model.CameraProfile.PORTRAIT, parsed.params.cameraProfile)
+        assertEquals(5050f, parsed.asShotTempRef!!, 0.5f)
+        assertEquals(5f, parsed.asShotTintRef!!, 0.5f)
+        assertEquals(3936f, parsed.params.temperature, 0.5f)
+
+        val reExported = XmpPresetCodec.exportToXmp(parsed)
+        val reparsed = XmpPresetCodec.parseXmp(reExported, "Fallback2")!!
+        assertEquals(5050f, reparsed.asShotTempRef!!, 0.5f)
+        assertEquals(5f, reparsed.asShotTintRef!!, 0.5f)
+    }
 }

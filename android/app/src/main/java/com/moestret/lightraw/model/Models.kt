@@ -809,7 +809,10 @@ data class DevelopPreset(
     val isUser: Boolean,
     val isFavorite: Boolean,
     val params: DevelopParams,
-    val xmpPath: String? = null
+    val xmpPath: String? = null,
+    val asShotTempRef: Float? = null,
+    val asShotTintRef: Float? = null,
+    val nativeLightRawWb: Boolean = false
 )
 
 data class PhotoAsset(

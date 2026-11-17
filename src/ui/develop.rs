@@ -329,8 +329,17 @@ fn render_preset_group_block(
 
         // Live Hover Preview on Navigator & Develop Canvas!
         if row.hovered() && !app.photos.is_empty() {
-            let preview_p =
-                LightRawApp::compute_preset_applied_params(&app.active_photo().params, pr);
+            let aid = app.active_photo_id;
+            let raw_info = app
+                .thumb_raw_cache
+                .get(&aid)
+                .or_else(|| app.raw_cache.get(&aid))
+                .map(|r| (r.as_shot_temp, r.as_shot_tint, r.is_scene_referred));
+            let preview_p = LightRawApp::compute_preset_applied_params_for_raw(
+                &app.active_photo().params,
+                pr,
+                raw_info,
+            );
             app.hovered_preset_preview = Some((pr.name.clone(), preview_p));
         }
 

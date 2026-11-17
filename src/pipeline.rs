@@ -1080,6 +1080,86 @@ pub fn render_develop_pipeline(
         lut_master
     };
 
+    // Precompute Camera Profile Look Curve LUT (matching Adobe Color / Standard / Portrait / Vivid / Landscape / Neutral)
+    let look_scale = (params.look_amount / 100.0).clamp(0.0, 2.0);
+    let profile_curve_pts: &[(f32, f32)] = match params.camera_profile {
+        CameraProfile::AdobeColor => &[
+            (0.0, 0.0),
+            (22.0 / 255.0, 16.0 / 255.0),
+            (40.0 / 255.0, 35.0 / 255.0),
+            (127.0 / 255.0, 127.0 / 255.0),
+            (224.0 / 255.0, 230.0 / 255.0),
+            (240.0 / 255.0, 246.0 / 255.0),
+            (1.0, 1.0),
+        ],
+        CameraProfile::AdobeStandard => &[
+            (0.0, 0.0),
+            (22.0 / 255.0, 19.0 / 255.0),
+            (48.0 / 255.0, 45.0 / 255.0),
+            (127.0 / 255.0, 127.0 / 255.0),
+            (224.0 / 255.0, 227.0 / 255.0),
+            (1.0, 1.0),
+        ],
+        CameraProfile::AdobePortrait => &[
+            (0.0, 0.0),
+            (24.0 / 255.0, 24.0 / 255.0),
+            (64.0 / 255.0, 66.0 / 255.0),
+            (127.0 / 255.0, 128.0 / 255.0),
+            (224.0 / 255.0, 227.0 / 255.0),
+            (1.0, 1.0),
+        ],
+        CameraProfile::AdobeVivid | CameraProfile::CameraPositiveFilm => &[
+            (0.0, 0.0),
+            (20.0 / 255.0, 13.0 / 255.0),
+            (44.0 / 255.0, 36.0 / 255.0),
+            (127.0 / 255.0, 127.0 / 255.0),
+            (218.0 / 255.0, 229.0 / 255.0),
+            (240.0 / 255.0, 247.0 / 255.0),
+            (1.0, 1.0),
+        ],
+        CameraProfile::AdobeLandscape => &[
+            (0.0, 0.0),
+            (20.0 / 255.0, 14.0 / 255.0),
+            (44.0 / 255.0, 38.0 / 255.0),
+            (127.0 / 255.0, 127.0 / 255.0),
+            (220.0 / 255.0, 228.0 / 255.0),
+            (1.0, 1.0),
+        ],
+        CameraProfile::AdobeNeutral | CameraProfile::CameraFaithful => &[
+            (0.0, 0.0),
+            (24.0 / 255.0, 27.0 / 255.0),
+            (64.0 / 255.0, 69.0 / 255.0),
+            (127.0 / 255.0, 127.0 / 255.0),
+            (208.0 / 255.0, 205.0 / 255.0),
+            (1.0, 1.0),
+        ],
+        CameraProfile::AdobeMonochrome => &[
+            (0.0, 0.0),
+            (24.0 / 255.0, 17.0 / 255.0),
+            (127.0 / 255.0, 127.0 / 255.0),
+            (224.0 / 255.0, 232.0 / 255.0),
+            (1.0, 1.0),
+        ],
+        CameraProfile::CameraStandard => &[
+            (0.0, 0.0),
+            (22.0 / 255.0, 17.0 / 255.0),
+            (44.0 / 255.0, 38.0 / 255.0),
+            (127.0 / 255.0, 127.0 / 255.0),
+            (224.0 / 255.0, 229.0 / 255.0),
+            (1.0, 1.0),
+        ],
+    };
+    let mut profile_lut = [0.0f32; 256];
+    let prof_lut_amt = look_scale.min(1.5);
+    for i in 0..256 {
+        let x = i as f32 / 255.0;
+        let curved = evaluate_point_curve(profile_curve_pts, x);
+        // For RAW scene-referred sensor data, blend genuine ACR base tone shaping (`xc^0.93` + Adobe Look curve)
+        let base_raw = (x.powf(0.93) * 1.02 * (smoothstep(0.0, 0.08, x) * 0.03 + 0.97)).clamp(0.0, 1.0);
+        let y_curve = base_raw + (curved - x) * prof_lut_amt;
+        profile_lut[i] = y_curve.clamp(0.0, 1.0);
+    }
+
     // 3x3 Bradford Chromatic Adaptation Matrix from camera As-Shot WB -> Target WB
     let wb_mat = match params.white_balance {
         WhiteBalanceMode::AsShot => [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -1107,7 +1187,6 @@ pub fn render_develop_pipeline(
         0.0
     };
     let ev_mult = 2.0f32.powf(params.exposure_2012 + raw_ev_lift);
-    let look_scale = (params.look_amount / 100.0).clamp(0.0, 2.0);
 
     // Transform, Upright, Constrain-to-Warp & Crop Straighten Angle
     let (auto_v, auto_h, auto_r) = compute_upright_parameters(src, params);
@@ -1660,8 +1739,8 @@ pub fn render_develop_pipeline(
             }
 
             // Convert scene-referred linear light into perceptual tone space for ACR PV2012 tone operators:
-            // For RAW (`is_scene_referred`), apply ACR's smooth filmic base response curve before sRGB encoding
-            // so shadows/midtones have Adobe Color richness while highlight headroom rolls off without clipping!
+            // Apply camera-profile primary chromatic alignment & Adobe Look Curve for scene-referred RAWs
+            // so Adobe Color / Standard / Portrait / Vivid / Landscape match Lightroom profile science.
             let (prof_contrast, prof_sat) = match params.camera_profile {
                 CameraProfile::AdobeColor => (1.04, 1.06),
                 CameraProfile::AdobeVivid => (1.16, 1.24),
@@ -1675,26 +1754,66 @@ pub fn render_develop_pipeline(
                 CameraProfile::CameraPositiveFilm => (1.18, 1.18),
             };
 
+            if src.is_scene_referred && !params.convert_to_grayscale && params.camera_profile != CameraProfile::AdobeMonochrome {
+                let mx_c = r.max(g).max(b);
+                let mn_c = r.min(g).min(b);
+                if mx_c > 1e-4 && prof_lut_amt > 0.001 {
+                    let chroma_w = ((mx_c - mn_c) / mx_c).clamp(0.0, 1.0);
+                    let sat_blue_gate = smoothstep(0.45, 0.85, chroma_w);
+                    let blue_dom = (((b - r.max(g)) / mx_c).clamp(0.0, 1.0) * sat_blue_gate).clamp(0.0, 1.0);
+                    let warm_dom = (((r - b) / mx_c).clamp(0.0, 1.0) * if r > g { 1.0 } else { 0.0 } * chroma_w).clamp(0.0, 1.0);
+                    let green_dom = (((g - r.max(b)) / mx_c).clamp(0.0, 1.0) * chroma_w).clamp(0.0, 1.0);
+                    match params.camera_profile {
+                        CameraProfile::AdobeColor | CameraProfile::CameraStandard => {
+                            // Suppress Apple CIRAWFilter cobalt red-floor bleed + add crisp warm skin separation
+                            r = (r * (1.0 - 0.58 * blue_dom * prof_lut_amt)).max(0.0);
+                            g = (g * (1.0 - 0.08 * blue_dom * prof_lut_amt)).max(0.0);
+                            r *= 1.0 + 0.045 * warm_dom * prof_lut_amt;
+                            g *= 1.0 - 0.015 * warm_dom * prof_lut_amt;
+                            b *= 1.0 - 0.025 * warm_dom * prof_lut_amt;
+                        }
+                        CameraProfile::AdobeStandard => {
+                            r = (r * (1.0 - 0.42 * blue_dom * prof_lut_amt)).max(0.0);
+                            r *= 1.0 + 0.02 * warm_dom * prof_lut_amt;
+                        }
+                        CameraProfile::AdobePortrait => {
+                            r = (r * (1.0 - 0.30 * blue_dom * prof_lut_amt)).max(0.0);
+                            r *= 1.0 + 0.03 * warm_dom * prof_lut_amt;
+                            g *= 1.0 + 0.015 * warm_dom * prof_lut_amt;
+                        }
+                        CameraProfile::AdobeVivid | CameraProfile::AdobeLandscape | CameraProfile::CameraPositiveFilm => {
+                            r = (r * (1.0 - 0.65 * blue_dom * prof_lut_amt)).max(0.0);
+                            r *= 1.0 + 0.055 * warm_dom * prof_lut_amt;
+                            g *= 1.0 + 0.08 * green_dom * prof_lut_amt;
+                        }
+                        CameraProfile::AdobeNeutral | CameraProfile::CameraFaithful | CameraProfile::AdobeMonochrome => {}
+                    }
+                }
+            }
+
             let hdr_ceil = if params.hdr_edit_mode {
                 2.0f32.powf(params.hdr_max_value.clamp(1.0, 4.0))
             } else {
                 1.0
             };
 
-            // Highlight compression shoulder in linear light (`Highlights2012` & `Whites2012`)
+            // Highlight compression shoulder in linear light (`Highlights2012` & `Whites2012`),
+            // gated cleanly onto upper highlights / white range so midtone skin is never crushed!
             let max_lin = r.max(g).max(b);
             let lin_lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
             if max_lin > 1e-5 {
-                // Soft highlight knee when Highlights or Whites are negative, or white boost when positive
-                let hl_pull = (-params.highlights_2012.min(0.0) * 0.0052)
-                    + (-params.whites_2012.min(0.0) * 0.0046)
-                    + if src.is_scene_referred { 0.14 } else { 0.0 };
+                let hi_neg = -params.highlights_2012.min(0.0) * 0.0058;
+                let wh_neg = -params.whites_2012.min(0.0) * 0.0062;
+                let hi_w = smoothstep(0.28, 0.96, max_lin);
+                let wh_w = smoothstep(0.52, 1.25, max_lin);
+                let base_headroom = if src.is_scene_referred { 0.12 * max_lin.powf(1.4) } else { 0.0 };
+                let hl_pull_factor = hi_neg * hi_w + wh_neg * wh_w + base_headroom;
                 let hl_push = (params.highlights_2012.max(0.0) * 0.0035)
                     + (params.whites_2012.max(0.0) * 0.0045);
 
                 // Smooth Rational Shoulder on `max_lin` preserves highlight color without clipping RGB channels individually!
                 let compressed_max = (max_lin * (1.0 + hl_push * smoothstep(0.25, 0.95, max_lin)))
-                    / (1.0 + hl_pull * max_lin.powf(1.15));
+                    / (1.0 + hl_pull_factor);
                 let ratio = compressed_max / max_lin;
                 r *= ratio;
                 g *= ratio;
@@ -1706,18 +1825,20 @@ pub fn render_develop_pipeline(
             let mut pg = linear_to_srgb(g / hdr_ceil);
             let mut pb = linear_to_srgb(b / hdr_ceil);
 
-            // ACR Base Filmic S-Curve for unboosted RAW sensor data
+            // Apply Camera Profile Base Response & Look Curve (`Adobe Color`, `Adobe Standard`, etc.)
             if src.is_scene_referred {
-                let base_curve = |x: f32| -> f32 {
-                    let xc = x.clamp(0.0, 1.2);
-                    // Lifts midtones gently while anchoring deep blacks
-                    let lifted = xc.powf(0.88) * 1.03;
-                    let toe = smoothstep(0.0, 0.10, lifted) * 0.04 + 0.96;
-                    (lifted * toe).clamp(0.0, 1.05)
+                pr = sample_lut(&profile_lut, pr);
+                pg = sample_lut(&profile_lut, pg);
+                pb = sample_lut(&profile_lut, pb);
+            } else if params.camera_profile != CameraProfile::AdobeColor && params.camera_profile != CameraProfile::AdobeMonochrome {
+                // Non-RAW images preserve neutral base at Adobe Color default, applying subtle profile look when switched
+                let shape = |v: f32| -> f32 {
+                    let c = evaluate_point_curve(profile_curve_pts, v);
+                    (v + (c - v) * 0.55 * prof_lut_amt).clamp(0.0, 1.0)
                 };
-                pr = base_curve(pr);
-                pg = base_curve(pg);
-                pb = base_curve(pb);
+                pr = shape(pr);
+                pg = shape(pg);
+                pb = shape(pb);
             }
 
             // Perceptual Shadows, Blacks, positive/fine Highlights & Whites with chromaticity preservation
@@ -1732,10 +1853,15 @@ pub fn render_develop_pipeline(
                     + params.whites_2012 * 0.0009 * plum.powi(3);
                 let new_plum = (plum + delta).max(0.0);
                 let sc = (new_plum / plum).clamp(0.05, 3.5);
-                // Blend 85% multiplicative (preserves saturation) + 15% additive (prevents shadow noise chroma explosion)
-                pr = (pr * sc * 0.85 + (pr + delta) * 0.15).max(0.0);
-                pg = (pg * sc * 0.85 + (pg + delta) * 0.15).max(0.0);
-                pb = (pb * sc * 0.85 + (pb + delta) * 0.15).max(0.0);
+                // Restrict additive component to neutral near-blacks so saturated blues/colors never get milky white haze
+                let c_mx = pr.max(pg).max(pb).max(1e-4);
+                let c_mn = pr.min(pg).min(pb);
+                let sat_est = ((c_mx - c_mn) / c_mx).clamp(0.0, 1.0);
+                let add_w = (0.15 * (1.0 - smoothstep(0.02, 0.22, plum)) * (1.0 - sat_est)).clamp(0.0, 0.15);
+                let mul_w = 1.0 - add_w;
+                pr = (pr * sc * mul_w + (pr + delta) * add_w).max(0.0);
+                pg = (pg * sc * mul_w + (pg + delta) * add_w).max(0.0);
+                pb = (pb * sc * mul_w + (pb + delta) * add_w).max(0.0);
             }
 
             // SDR Preview controls when HDR Edit Mode + Preview for SDR Display is enabled
@@ -1840,7 +1966,7 @@ pub fn render_develop_pipeline(
                     let mut s_delta = 0.0f32;
                     let mut l_delta = 0.0f32;
                     // Chroma gate prevents neutral grays/whites from shifting hue or luminance
-                    let chroma_gate = smoothstep(0.03, 0.16, s);
+                    let chroma_gate = smoothstep(0.02, 0.11, s);
 
                     for band in 0..8 {
                         let mut dh = (h - DevelopParams::HSL_BAND_HUES[band]).abs();
@@ -1851,7 +1977,7 @@ pub fn render_develop_pipeline(
                             let w = (1.0 - dh / 54.0).powi(2);
                             h_delta += params.hue_adjustment[band] * 0.85 * w;
                             s_delta += params.saturation_adjustment[band] * 0.0085 * w;
-                            l_delta += params.luminance_adjustment[band] * 0.0026 * w * chroma_gate;
+                            l_delta += params.luminance_adjustment[band] * 0.0036 * w * chroma_gate;
                         }
                     }
 

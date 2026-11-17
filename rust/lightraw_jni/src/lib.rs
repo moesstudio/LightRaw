@@ -125,8 +125,10 @@ pub fn parse_develop_params_json(json_str: &str) -> DevelopParams {
         "VIVID" => CameraProfile::AdobeVivid,
         "PORTRAIT" => CameraProfile::AdobePortrait,
         "LANDSCAPE" => CameraProfile::AdobeLandscape,
+        "NEUTRAL" => CameraProfile::AdobeNeutral,
         "MONOCHROME" => CameraProfile::AdobeMonochrome,
         "FILM" => CameraProfile::CameraStandard,
+        "ADOBE_STANDARD" => CameraProfile::AdobeStandard,
         _ => CameraProfile::AdobeColor,
     };
     p.look_amount = f("lookAmount", 100.0);
@@ -329,7 +331,7 @@ pub extern "system" fn Java_com_moestret_lightraw_engine_NativeBridge_nativeVers
     env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    new_jstring(&mut { env }, "LightRaw Rust Core 1.2.4 (PV2012)")
+    new_jstring(&mut { env }, "LightRaw Rust Core 1.2.5 (PV2012)")
 }
 
 /// Processes RGBA8 input using LightRaw's full non-destructive PV2012 Rust pipeline.

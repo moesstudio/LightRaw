@@ -24,6 +24,14 @@ pub struct DevelopPreset {
     pub is_visible: bool,
     #[serde(default)]
     pub xmp_file_path: Option<String>,
+    /// Source camera As-Shot Temperature/Tint calibration anchor recorded in `.xmp` (e.g. Adobe Lightroom `5050 K / +5`).
+    #[serde(default)]
+    pub as_shot_temp_ref: Option<f32>,
+    #[serde(default)]
+    pub as_shot_tint_ref: Option<f32>,
+    /// True when the preset was authored inside LightRaw's own WB coordinate system rather than imported from Adobe XMP.
+    #[serde(default)]
+    pub native_lightraw_wb: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -444,6 +452,64 @@ impl CopySettingsMask {
         m.sync_groups_from_children();
         m
     }
+}
+
+/// Applies a `DevelopPreset` onto `base`, translating Adobe XMP White Balance coordinates from
+/// the preset's camera As-Shot anchor onto the target RAW decoder's `(as_shot_temp, as_shot_tint)`
+/// via optical Mired + Tint delta so imported presets never introduce cross-engine green/cyan shifts.
+pub fn apply_preset_for_raw(
+    base: &DevelopParams,
+    preset: &DevelopPreset,
+    raw_as_shot: Option<(f32, f32, bool)>,
+) -> DevelopParams {
+    let mut target = base.clone();
+    let eff_mask = preset
+        .mask
+        .clone()
+        .unwrap_or_else(CopySettingsMask::default);
+    apply_settings_with_mask(&mut target, &preset.params, &eff_mask);
+
+    if eff_mask.basic_white_balance && target.white_balance == WhiteBalanceMode::Custom {
+        if let Some((src_temp, src_tint, is_scene_referred)) = raw_as_shot {
+            if is_scene_referred && src_temp > 1000.0 {
+                let ref_pair = match (preset.as_shot_temp_ref, preset.as_shot_tint_ref) {
+                    (Some(rt), Some(rti)) => Some((rt, rti)),
+                    (Some(rt), None) => Some((rt, src_tint)),
+                    (None, Some(rti)) => Some((src_temp, rti)),
+                    (None, None)
+                        if preset.is_user
+                            && !preset.native_lightraw_wb
+                            && src_tint.abs() > 12.0
+                            && ((src_tint - 5.0).abs() > 8.0
+                                || (src_temp - 5100.0).abs() > 650.0) =>
+                    {
+                        Some((5100.0, 5.0))
+                    }
+                    _ => None,
+                };
+                if let Some((ref_temp, ref_tint)) = ref_pair {
+                    if (ref_temp - src_temp).abs() > 120.0 || (ref_tint - src_tint).abs() > 2.5 {
+                        let d_mired = 1_000_000.0 / target.temperature.max(1500.0)
+                            - 1_000_000.0 / ref_temp.max(1500.0);
+                        let mapped_mired =
+                            (1_000_000.0 / src_temp.max(1500.0) + d_mired).clamp(20.0, 500.0);
+                        target.temperature =
+                            (1_000_000.0 / mapped_mired).round().clamp(2000.0, 50000.0);
+                        target.tint =
+                            (src_tint + (target.tint - ref_tint)).clamp(-150.0, 150.0);
+                    }
+                }
+            }
+        }
+    }
+
+    target.applied_preset_name = preset.name.clone();
+    target.preset_base_snapshot = Some(Box::new(base.clone()));
+    let mut snap_target = target.clone();
+    snap_target.preset_base_snapshot = None;
+    snap_target.preset_target_snapshot = None;
+    target.preset_target_snapshot = Some(Box::new(snap_target));
+    target
 }
 
 pub fn apply_settings_with_mask(
@@ -1648,6 +1714,12 @@ pub fn parse_xmp_preset(content: &str, fallback_name: &str) -> Option<DevelopPre
         .collect();
     let id = format!("xmp_{}", slug.trim_matches('_'));
 
+    let as_shot_temp_ref = extract_attr_f32(&main_xml, "crs:AsShotTemperature")
+        .filter(|t| *t >= 1500.0 && *t <= 50000.0);
+    let as_shot_tint_ref = extract_attr_f32(&main_xml, "crs:AsShotTint")
+        .map(|ti| ti.clamp(-150.0, 150.0));
+    let native_lightraw_wb = extract_attr_bool(&main_xml, "crs:LightRawNativeWB").unwrap_or(false);
+
     Some(DevelopPreset {
         id,
         category: group,
@@ -1658,6 +1730,9 @@ pub fn parse_xmp_preset(content: &str, fallback_name: &str) -> Option<DevelopPre
         mask: Some(mask),
         is_visible: true,
         xmp_file_path: None,
+        as_shot_temp_ref,
+        as_shot_tint_ref,
+        native_lightraw_wb,
     })
 }
 
@@ -1721,6 +1796,15 @@ pub fn export_preset_to_xmp(preset: &DevelopPreset) -> String {
             attrs.push_str(&format!("   crs:Temperature=\"{:.0}\"\n", p.temperature));
             attrs.push_str(&format!("   crs:Tint=\"{:+.0}\"\n", p.tint));
         }
+    }
+    if let Some(at) = preset.as_shot_temp_ref {
+        attrs.push_str(&format!("   crs:AsShotTemperature=\"{:.0}\"\n", at));
+    }
+    if let Some(ati) = preset.as_shot_tint_ref {
+        attrs.push_str(&format!("   crs:AsShotTint=\"{:.0}\"\n", ati));
+    }
+    if preset.native_lightraw_wb {
+        attrs.push_str("   crs:LightRawNativeWB=\"True\"\n");
     }
     if m.basic_exposure {
         attrs.push_str(&format!("   crs:Exposure2012=\"{:+.2}\"\n", p.exposure_2012));
@@ -2144,6 +2228,9 @@ fn make_builtin(id: &str, category: &str, name: &str, params: DevelopParams, mas
         mask,
         is_visible: true,
         xmp_file_path: None,
+        as_shot_temp_ref: None,
+        as_shot_tint_ref: None,
+        native_lightraw_wb: true,
     }
 }
 

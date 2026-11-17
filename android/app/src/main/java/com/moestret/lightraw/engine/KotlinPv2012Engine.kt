@@ -405,7 +405,7 @@ object KotlinPv2012Engine {
                             b = (0.5f + (b - 0.5f) * conFactor).coerceIn(0f, 1f)
                         }
 
-                        // Camera Profile Look Shaping
+                        // Camera Profile Look Shaping (aligned with Desktop Adobe Color / Portrait / Vivid / Landscape)
                         when (params.cameraProfile) {
                             CameraProfile.VIVID -> {
                                 val mf = 1f + 0.14f * profileLook
@@ -424,6 +424,18 @@ object KotlinPv2012Engine {
                             }
                             CameraProfile.PORTRAIT -> {
                                 r = (r * (1f + 0.02f * profileLook)).coerceIn(0f, 1f)
+                            }
+                            CameraProfile.NEUTRAL -> {
+                                val mf = 1f - 0.12f * profileLook
+                                r = (0.5f + (r - 0.5f) * mf).coerceIn(0f, 1f)
+                                g = (0.5f + (g - 0.5f) * mf).coerceIn(0f, 1f)
+                                b = (0.5f + (b - 0.5f) * mf).coerceIn(0f, 1f)
+                            }
+                            CameraProfile.NATURAL -> {
+                                val mf = 1f + 0.04f * profileLook
+                                r = (0.48f + (r - 0.48f) * mf).coerceIn(0f, 1f)
+                                g = (0.48f + (g - 0.48f) * mf).coerceIn(0f, 1f)
+                                b = (0.48f + (b - 0.48f) * mf).coerceIn(0f, 1f)
                             }
                             else -> Unit
                         }
@@ -473,7 +485,7 @@ object KotlinPv2012Engine {
                                 }
                                 hue = ((hue + dh * 0.32f) % 360f + 360f) % 360f
                                 satN = (satN * (1f + ds / 100f)).coerceIn(0f, 1f)
-                                lumN = (lumN + (dl / 100f) * 0.22f * satN).coerceIn(0f, 1f)
+                                lumN = (lumN + (dl / 100f) * 0.30f * satN).coerceIn(0f, 1f)
                                 val outHsl = hslToRgb(hue, satN, lumN)
                                 r = outHsl[0]; g = outHsl[1]; b = outHsl[2]
                             }

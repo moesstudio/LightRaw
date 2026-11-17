@@ -17,11 +17,11 @@ pub use widgets::*;
 
 use crate::catalog::{
     create_default_collections, create_empty_placeholder_photo, decode_real_photo_file,
-    detect_faces_and_focus_for_photo, extract_real_photo_metadata, is_supported_photo_path,
-    query_volume_disk_space, CatalogDb, CollectionItem, ColorLabel, HistoryStep, PhotoItem,
-    PickFlag, SavedLocationEntry,
+    detect_faces_and_focus_for_photo, extract_real_photo_metadata, is_camera_raw_extension,
+    is_supported_photo_path, query_volume_disk_space, CatalogDb, CollectionItem, ColorLabel,
+    HistoryStep, PhotoItem, PickFlag, SavedLocationEntry,
 };
-use crate::params::{DevelopParams, RedEyeMode, RetouchMode};
+use crate::params::{DevelopParams, RedEyeMode, RetouchMode, WhiteBalanceMode};
 use crate::pipeline::{
     estimate_auto_wb, render_develop_pipeline, RawSourceImage, RenderOptions, RenderedFrame,
 };
@@ -2356,19 +2356,15 @@ impl LightRawApp {
         base: &DevelopParams,
         preset: &DevelopPreset,
     ) -> DevelopParams {
-        let mut target = base.clone();
-        let eff_mask = preset
-            .mask
-            .clone()
-            .unwrap_or_else(CopySettingsMask::default);
-        apply_settings_with_mask(&mut target, &preset.params, &eff_mask);
-        target.applied_preset_name = preset.name.clone();
-        target.preset_base_snapshot = Some(Box::new(base.clone()));
-        let mut snap_target = target.clone();
-        snap_target.preset_base_snapshot = None;
-        snap_target.preset_target_snapshot = None;
-        target.preset_target_snapshot = Some(Box::new(snap_target));
-        target
+        crate::presets::apply_preset_for_raw(base, preset, None)
+    }
+
+    pub fn compute_preset_applied_params_for_raw(
+        base: &DevelopParams,
+        preset: &DevelopPreset,
+        raw_as_shot: Option<(f32, f32, bool)>,
+    ) -> DevelopParams {
+        crate::presets::apply_preset_for_raw(base, preset, raw_as_shot)
     }
 
     pub fn apply_preset_to_selection(&mut self, preset_name: &str) {
@@ -2387,8 +2383,18 @@ impl LightRawApp {
         };
 
         for id in &ids {
+            let raw_info = if preset.params.white_balance == WhiteBalanceMode::Custom {
+                self.ensure_thumb_raw(*id)
+                    .map(|r| (r.as_shot_temp, r.as_shot_tint, r.is_scene_referred))
+            } else {
+                None
+            };
             if let Some(photo) = self.photos.iter_mut().find(|p| p.id == *id) {
-                let next_params = Self::compute_preset_applied_params(&photo.params, &preset);
+                let next_params = Self::compute_preset_applied_params_for_raw(
+                    &photo.params,
+                    &preset,
+                    raw_info,
+                );
                 if photo.history_index + 1 < photo.history.len() {
                     photo.history.truncate(photo.history_index + 1);
                 }
@@ -2968,6 +2974,12 @@ impl LightRawApp {
         };
         let mut saved = 0usize;
         for id in ids {
+            let raw_anchor = self
+                .thumb_raw_cache
+                .get(&id)
+                .or_else(|| self.raw_cache.get(&id))
+                .filter(|r| r.is_scene_referred)
+                .map(|r| (r.as_shot_temp, r.as_shot_tint));
             if let Some(photo) = self.photos.iter().find(|p| p.id == id) {
                 if let Some(ref rp) = photo.real_file_path {
                     let xmp_path = Path::new(rp).with_extension("xmp");
@@ -2981,6 +2993,9 @@ impl LightRawApp {
                         params: photo.params.clone(),
                         mask: None,
                         xmp_file_path: None,
+                        as_shot_temp_ref: raw_anchor.map(|a| a.0),
+                        as_shot_tint_ref: raw_anchor.map(|a| a.1),
+                        native_lightraw_wb: true,
                     };
                     if std::fs::write(&xmp_path, export_preset_to_xmp(&pr)).is_ok() {
                         saved += 1;
@@ -3009,13 +3024,24 @@ impl LightRawApp {
                 .and_then(|xp| std::fs::read_to_string(xp).ok());
             if let Some(xml) = xmp_opt {
                 if let Some(parsed) = parse_xmp_preset(&xml, "Sidecar") {
+                    let raw_info = if parsed.params.white_balance == WhiteBalanceMode::Custom {
+                        self.ensure_thumb_raw(id)
+                            .map(|r| (r.as_shot_temp, r.as_shot_tint, r.is_scene_referred))
+                    } else {
+                        None
+                    };
                     if let Some(p) = self.photos.iter_mut().find(|x| x.id == id) {
-                        p.params = parsed.params.clone();
+                        let applied = Self::compute_preset_applied_params_for_raw(
+                            &p.params,
+                            &parsed,
+                            raw_info,
+                        );
+                        p.params = applied.clone();
                         p.history.push(HistoryStep {
                             name: "Read Metadata from XMP".into(),
                             value_summary: String::new(),
                             timestamp: "XMP".into(),
-                            params: parsed.params,
+                            params: applied,
                         });
                         p.history_index = p.history.len() - 1;
                         self.catalog_db.save_photo(p);
@@ -3192,8 +3218,18 @@ impl LightRawApp {
                         .map(|p| p.params.applied_preset_name.as_str() == pr_name.as_str())
                         .unwrap_or(false);
                     if !already {
+                        let raw_info = if pr.params.white_balance == WhiteBalanceMode::Custom {
+                            self.ensure_thumb_raw(photo_id)
+                                .map(|r| (r.as_shot_temp, r.as_shot_tint, r.is_scene_referred))
+                        } else {
+                            None
+                        };
                         if let Some(p) = self.photos.iter_mut().find(|x| x.id == photo_id) {
-                            p.params = Self::compute_preset_applied_params(&p.params, &pr);
+                            p.params = Self::compute_preset_applied_params_for_raw(
+                                &p.params,
+                                &pr,
+                                raw_info,
+                            );
                             self.catalog_db.save_photo(p);
                         }
                         self.invalidate_photo_render_caches(photo_id);
@@ -3666,7 +3702,15 @@ impl LightRawApp {
             if pr_name == "Auto Tone" {
                 p.params.auto_tone = true;
             } else if let Some(pr) = self.presets.iter().find(|x| x.name == pr_name).cloned() {
-                p.params = Self::compute_preset_applied_params(&p.params, &pr);
+                let raw_info = if pr.params.white_balance == WhiteBalanceMode::Custom
+                    && is_camera_raw_extension(&final_path)
+                {
+                    decode_real_photo_file(&final_path, 256, 256)
+                        .map(|r| (r.as_shot_temp, r.as_shot_tint, r.is_scene_referred))
+                } else {
+                    None
+                };
+                p.params = Self::compute_preset_applied_params_for_raw(&p.params, &pr, raw_info);
             }
         }
         p.history = vec![HistoryStep {

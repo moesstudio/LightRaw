@@ -345,6 +345,9 @@ impl LightRawApp {
                     params: photo.params.clone(),
                     mask: None,
                     xmp_file_path: None,
+                    as_shot_temp_ref: None,
+                    as_shot_tint_ref: None,
+                    native_lightraw_wb: true,
                 };
                 let _ = std::fs::write(
                     out_root.join(format!("{}.xmp", stem)),
@@ -491,6 +494,9 @@ impl LightRawApp {
                     params: photo.params.clone(),
                     mask: None,
                     xmp_file_path: None,
+                    as_shot_temp_ref: None,
+                    as_shot_tint_ref: None,
+                    native_lightraw_wb: true,
                 };
                 let _ = std::fs::write(
                     out_root.join(format!("{}.xmp", stem)),

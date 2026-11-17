@@ -963,17 +963,40 @@ mod tests {
             mask: Some(CopySettingsMask::all()),
             is_visible: true,
             xmp_file_path: None,
+            as_shot_temp_ref: Some(5050.0),
+            as_shot_tint_ref: Some(5.0),
+            native_lightraw_wb: false,
         };
         let xml = export_preset_to_xmp(&preset);
         let reparsed = parse_xmp_preset(&xml, "Full 156 Field Test").expect("reparse rich XMP");
         assert_eq!(reparsed.params.camera_profile, CameraProfile::AdobeVivid);
         assert!((reparsed.params.temperature - 4850.0).abs() < 0.5);
+        assert_eq!(reparsed.as_shot_temp_ref, Some(5050.0));
+        assert_eq!(reparsed.as_shot_tint_ref, Some(5.0));
+        assert!(!reparsed.native_lightraw_wb);
         assert_eq!(reparsed.params.tone_curve_pv2012.len(), 4);
         assert!((reparsed.params.tone_curve_pv2012[0].1 - 0.03).abs() < 0.01);
         assert!((reparsed.params.hue_adjustment[5] - (-18.0)).abs() < 0.5);
         assert!(!reparsed.params.point_colors.is_empty());
         assert!((reparsed.params.blue_saturation - 26.0).abs() < 0.5);
         assert!(!reparsed.params.mask_groups.is_empty());
+
+        // Cross-engine As-Shot WB anchor translation (Lightroom 5050K/+5 -> 4850K/+12 on Apple CIRAWFilter 5975K/+20.8 => +7 tint -> 27.8)
+        let applied_raw = crate::presets::apply_preset_for_raw(
+            &DevelopParams::default(),
+            &reparsed,
+            Some((5975.0, 20.8, true)),
+        );
+        assert!(
+            (applied_raw.tint - 27.8).abs() < 0.2,
+            "tint should preserve +7 delta across anchors, got {}",
+            applied_raw.tint
+        );
+        assert!(
+            applied_raw.temperature > 5600.0 && applied_raw.temperature < 5760.0,
+            "temp should preserve mired shift, got {}",
+            applied_raw.temperature
+        );
 
         // 3. Multi-page PDF 1.4 export verification
         let pdf_path = std::env::temp_dir().join(format!("lightraw_book_test_{}.pdf", std::process::id()));
