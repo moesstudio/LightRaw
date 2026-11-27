@@ -925,8 +925,13 @@ int lightraw_ai_hardware_info(char *out_desc, size_t max_len) {
     if (!out_desc || max_len == 0) return 0;
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+#if defined(__arm64__) || defined(__aarch64__)
         NSString *gpuName = dev ? dev.name : @"Apple Silicon GPU";
         NSString *info = [NSString stringWithFormat:@"Apple Neural Engine (16-core ANE) + %@", gpuName];
+#else
+        NSString *gpuName = dev ? dev.name : @"Intel / AMD Metal GPU";
+        NSString *info = [NSString stringWithFormat:@"Apple Vision Engine + %@ (Intel x86_64)", gpuName];
+#endif
         strncpy(out_desc, [info UTF8String], max_len - 1);
         out_desc[max_len - 1] = '\0';
         return 1;
@@ -971,12 +976,14 @@ int lightraw_ai_segment_subject_rgba(
 
         // 2. Fallback: macOS 12+ Accurate Person Segmentation Request
         if (!maskPb) {
-            VNGeneratePersonSegmentationRequest *personReq = [[VNGeneratePersonSegmentationRequest alloc] init];
-            personReq.qualityLevel = VNGeneratePersonSegmentationRequestQualityLevelAccurate;
-            personReq.outputPixelFormat = kCVPixelFormatType_OneComponent8;
-            if ([handler performRequests:@[personReq] error:&err] && personReq.results.count > 0) {
-                VNPixelBufferObservation *pObs = personReq.results.firstObject;
-                maskPb = CVPixelBufferRetain(pObs.pixelBuffer);
+            if (@available(macOS 12.0, *)) {
+                VNGeneratePersonSegmentationRequest *personReq = [[VNGeneratePersonSegmentationRequest alloc] init];
+                personReq.qualityLevel = VNGeneratePersonSegmentationRequestQualityLevelAccurate;
+                personReq.outputPixelFormat = kCVPixelFormatType_OneComponent8;
+                if ([handler performRequests:@[personReq] error:&err] && personReq.results.count > 0) {
+                    VNPixelBufferObservation *pObs = personReq.results.firstObject;
+                    maskPb = CVPixelBufferRetain(pObs.pixelBuffer);
+                }
             }
         }
 
@@ -1094,40 +1101,43 @@ int lightraw_ai_segment_people_parts_rgba(
         memset(out_parts_mask, 0, (size_t)mask_w * (size_t)mask_h);
 
         VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:cgImg options:@{}];
-        VNGeneratePersonSegmentationRequest *personReq = [[VNGeneratePersonSegmentationRequest alloc] init];
-        personReq.qualityLevel = VNGeneratePersonSegmentationRequestQualityLevelAccurate;
-        personReq.outputPixelFormat = kCVPixelFormatType_OneComponent8;
-
         VNDetectFaceLandmarksRequest *faceReq = [[VNDetectFaceLandmarksRequest alloc] init];
-
         NSError *err = nil;
-        [handler performRequests:@[personReq, faceReq] error:&err];
-        CGImageRelease(cgImg);
 
-        // 1. Fill base person body segmentation (code 6: Body/Clothes/Hair)
-        if (personReq.results.count > 0) {
-            VNPixelBufferObservation *pObs = personReq.results.firstObject;
-            CVPixelBufferRef pb = pObs.pixelBuffer;
-            if (pb) {
-                CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
-                size_t pbW = CVPixelBufferGetWidth(pb);
-                size_t pbH = CVPixelBufferGetHeight(pb);
-                size_t bpr = CVPixelBufferGetBytesPerRow(pb);
-                const uint8_t *base = (const uint8_t *)CVPixelBufferGetBaseAddress(pb);
+        // 1. Fill base person body segmentation (code 6: Body/Clothes/Hair, macOS 12+)
+        if (@available(macOS 12.0, *)) {
+            VNGeneratePersonSegmentationRequest *personReq = [[VNGeneratePersonSegmentationRequest alloc] init];
+            personReq.qualityLevel = VNGeneratePersonSegmentationRequestQualityLevelAccurate;
+            personReq.outputPixelFormat = kCVPixelFormatType_OneComponent8;
 
-                for (uint32_t my = 0; my < mask_h; my++) {
-                    size_t py = (size_t)(((float)my / (float)mask_h) * (float)(pbH - 1));
-                    const uint8_t *row = base + py * bpr;
-                    for (uint32_t mx = 0; mx < mask_w; mx++) {
-                        size_t px = (size_t)(((float)mx / (float)mask_w) * (float)(pbW - 1));
-                        if (row[px] > 100) {
-                            out_parts_mask[my * mask_w + mx] = 6; // Entire person / body
+            [handler performRequests:@[personReq, faceReq] error:&err];
+            if (personReq.results.count > 0) {
+                VNPixelBufferObservation *pObs = personReq.results.firstObject;
+                CVPixelBufferRef pb = pObs.pixelBuffer;
+                if (pb) {
+                    CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+                    size_t pbW = CVPixelBufferGetWidth(pb);
+                    size_t pbH = CVPixelBufferGetHeight(pb);
+                    size_t bpr = CVPixelBufferGetBytesPerRow(pb);
+                    const uint8_t *base = (const uint8_t *)CVPixelBufferGetBaseAddress(pb);
+
+                    for (uint32_t my = 0; my < mask_h; my++) {
+                        size_t py = (size_t)(((float)my / (float)mask_h) * (float)(pbH - 1));
+                        const uint8_t *row = base + py * bpr;
+                        for (uint32_t mx = 0; mx < mask_w; mx++) {
+                            size_t px = (size_t)(((float)mx / (float)mask_w) * (float)(pbW - 1));
+                            if (row[px] > 100) {
+                                out_parts_mask[my * mask_w + mx] = 6; // Entire person / body
+                            }
                         }
                     }
+                    CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
                 }
-                CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
             }
+        } else {
+            [handler performRequests:@[faceReq] error:&err];
         }
+        CGImageRelease(cgImg);
 
         // 2. Overlay precise face landmark parts
         for (VNFaceObservation *face in faceReq.results) {

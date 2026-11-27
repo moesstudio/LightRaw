@@ -22,23 +22,35 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Build Release Binary
-        run: cargo build --release
+      - name: Build Universal Release Binary (Apple Silicon + Apple Intel)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p target/universal-release
+          lipo -create \
+            target/aarch64-apple-darwin/release/lightraw \
+            target/x86_64-apple-darwin/release/lightraw \
+            -output target/universal-release/lightraw
+          lipo -info target/universal-release/lightraw
 
       - name: Resolve release version
         run: |
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
-            echo "LIGHTRAW_VERSION=1.2.5" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_VERSION=1.2.6" >> "$GITHUB_ENV"
           fi
 
       - name: Package LightRaw.app
         run: |
           mkdir -p LightRaw.app/Contents/MacOS
           mkdir -p LightRaw.app/Contents/Resources
-          cp target/release/lightraw LightRaw.app/Contents/MacOS/LightRaw
+          cp target/universal-release/lightraw LightRaw.app/Contents/MacOS/LightRaw
           chmod +x LightRaw.app/Contents/MacOS/LightRaw
           cp LightRaw.icns LightRaw.app/Contents/Resources/LightRaw.icns || true
           if [ -f LightRaw.app/Contents/Info.plist ]; then
@@ -103,7 +115,7 @@ jobs:
         shell: pwsh
         run: |
           $ref = $env:GITHUB_REF_NAME
-          if ($ref -and $ref.StartsWith("v")) { $ver = $ref.Substring(1) } else { $ver = "1.2.5" }
+          if ($ref -and $ref.StartsWith("v")) { $ver = $ref.Substring(1) } else { $ver = "1.2.6" }
           "LIGHTRAW_VERSION=$ver" >> $env:GITHUB_ENV
 
       - name: Build Inno Setup Installer (.exe)
@@ -155,7 +167,7 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
-            echo "LIGHTRAW_VERSION=1.2.5" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_VERSION=1.2.6" >> "$GITHUB_ENV"
           fi
 
       - name: Build Debian Package (.deb)
@@ -267,7 +279,7 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             echo "LIGHTRAW_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
-            echo "LIGHTRAW_VERSION_NAME=1.2.5" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_VERSION_NAME=1.2.6" >> "$GITHUB_ENV"
           fi
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > "${GITHUB_WORKSPACE}/android/lightraw-release.jks"
@@ -345,7 +357,7 @@ jobs:
           if [[ "${GITHUB_REF_NAME}" == v* ]]; then
             echo "LIGHTRAW_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
-            echo "LIGHTRAW_VERSION=1.2.5" >> "$GITHUB_ENV"
+            echo "LIGHTRAW_VERSION=1.2.6" >> "$GITHUB_ENV"
           fi
 
       - name: Create GitHub Release
@@ -365,7 +377,7 @@ jobs:
 
             ### Available Installers & APKs:
             - **Android**: `LightRaw-Android-release.apk` & `LightRaw-Android-debug.apk`
-            - **macOS**: `LightRaw-${{ env.LIGHTRAW_VERSION }}-macOS.dmg` (Universal Drag & Drop Installer)
+            - **macOS**: `LightRaw-${{ env.LIGHTRAW_VERSION }}-macOS.dmg` (Universal Drag & Drop Installer — Apple Silicon `arm64` + Apple Intel `x86_64`)
             - **Windows**: `LightRaw-${{ env.LIGHTRAW_VERSION }}-Windows-Setup.exe` (Inno Setup) & `LightRaw-${{ env.LIGHTRAW_VERSION }}.msi` (Windows Installer)
             - **Linux (Debian / Ubuntu / Mint)**: `lightraw_${{ env.LIGHTRAW_VERSION }}_amd64.deb`
             - **Linux (Universal)**: `LightRaw-${{ env.LIGHTRAW_VERSION }}-x86_64.AppImage` & `lightraw-${{ env.LIGHTRAW_VERSION }}-linux-x86_64.tar.gz`

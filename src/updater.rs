@@ -94,7 +94,7 @@ pub fn is_newer_version(remote: &str, current: &str) -> bool {
 pub fn pick_desktop_asset(
     assets: &[UpdateAsset],
     os: &str,
-    _arch: &str,
+    arch: &str,
     running_appimage: bool,
 ) -> Option<UpdateAsset> {
     let find_matching = |suffixes: &[&str]| -> Option<UpdateAsset> {
@@ -110,7 +110,11 @@ pub fn pick_desktop_asset(
     };
 
     match os {
-        "macos" => find_matching(&["macos.dmg", ".dmg"]),
+        "macos" => match arch {
+            "x86_64" => find_matching(&["macos-x86_64.dmg", "macos-intel.dmg", "macos.dmg", ".dmg"]),
+            "aarch64" => find_matching(&["macos-arm64.dmg", "macos.dmg", ".dmg"]),
+            _ => find_matching(&["macos.dmg", ".dmg"]),
+        },
         "windows" => find_matching(&["windows-setup.exe", ".exe", ".msi"]),
         "linux" => {
             if running_appimage {
@@ -519,6 +523,11 @@ mod tests {
         ];
         assert_eq!(
             pick_desktop_asset(&assets, "macos", "aarch64", false)
+                .map(|a| a.name),
+            Some("LightRaw-1.2.1-macOS.dmg".into())
+        );
+        assert_eq!(
+            pick_desktop_asset(&assets, "macos", "x86_64", false)
                 .map(|a| a.name),
             Some("LightRaw-1.2.1-macOS.dmg".into())
         );

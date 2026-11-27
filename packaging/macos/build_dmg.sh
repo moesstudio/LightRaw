@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build macOS DMG Installer for LightRaw
-VERSION="${LIGHTRAW_VERSION:-1.2.5}"
+# Build macOS Universal DMG Installer (Apple Silicon arm64 + Apple Intel x86_64) for LightRaw
+VERSION="${LIGHTRAW_VERSION:-1.2.6}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 STAGING_DIR="${DIST_DIR}/dmg_staging"
@@ -10,6 +10,9 @@ APP_BUNDLE="${ROOT_DIR}/LightRaw.app"
 DMG_OUTPUT="${DIST_DIR}/LightRaw-${VERSION}-macOS.dmg"
 
 echo "==> Building macOS .dmg installer for LightRaw ${VERSION}..."
+if [ -f "${APP_BUNDLE}/Contents/MacOS/LightRaw" ]; then
+    lipo -info "${APP_BUNDLE}/Contents/MacOS/LightRaw" || true
+fi
 mkdir -p "${DIST_DIR}"
 rm -rf "${STAGING_DIR}" "${DMG_OUTPUT}"
 mkdir -p "${STAGING_DIR}"
